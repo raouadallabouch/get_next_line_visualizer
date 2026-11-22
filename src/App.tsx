@@ -1,298 +1,120 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { EvalCompendiumDrawer } from './components/EvalCompendiumDrawer';
-import { FileEditorDrawer } from './components/FileEditorDrawer';
-import { HardwareKernelPanel } from './components/HardwareKernelPanel';
-import { MemoryPanel } from './components/MemoryPanel';
-import { StagePipeline } from './components/StagePipeline';
-import { StepNarrative } from './components/StepNarrative';
-import { TopBar } from './components/TopBar';
-import { TransportBar } from './components/TransportBar';
-import { compileTrace } from './engine/compiler';
-import { getPresetById } from './engine/presets';
-import { Granularity, Mode, SimulationConfig, VirtualFileConfig } from './engine/types';
+import React, { useEffect, useState } from 'react';
+import { ConceptIndexDrawer } from './components/ConceptIndexDrawer';
+import { ConceptInspector } from './components/ConceptInspector';
+import { ConceptId } from './data/concepts';
+import { LiveFlowDiagram } from './diagrams/LiveFlowDiagram';
+import { MemoryMapDiagram } from './diagrams/MemoryMapDiagram';
+import { SyscallKernelDiagram } from './diagrams/SyscallKernelDiagram';
+import { SystemMapDiagram } from './diagrams/SystemMapDiagram';
 
-function presetToConfig(presetId: string): SimulationConfig {
-  const p = getPresetById(presetId);
-  return {
-    mode: p.mode,
-    bufferSize: p.bufferSize,
-    files: p.files.map((f) => ({ ...f })),
-    callSequence: [...p.callSequence],
-    presetId: p.id,
-  };
-}
+type ChapterId = 1 | 2 | 3 | 4;
+
+const CHAPTERS: { id: ChapterId; num: string; label: string; defaultConcept: ConceptId }[] = [
+  { id: 1, num: '1', label: 'System Map', defaultConcept: 'ram' },
+  { id: 2, num: '2', label: 'Memory Map', defaultConcept: 'buffer_size' },
+  { id: 3, num: '3', label: 'Syscall & Kernel', defaultConcept: 'rings' },
+  { id: 4, num: '4', label: 'Live GNL Flow', defaultConcept: 'bss' },
+];
 
 export const App: React.FC = () => {
-  const [config, setConfig] = useState<SimulationConfig>(() => presetToConfig('standard'));
-  const [granularity, setGranularity] = useState<Granularity>('micro');
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [speedMs, setSpeedMs] = useState(800);
-  const [showFileEditor, setShowFileEditor] = useState(false);
-  const [showEvalDrawer, setShowEvalDrawer] = useState(false);
+  const [chapter, setChapter] = useState<ChapterId>(1);
+  const [selectedConcept, setSelectedConcept] = useState<ConceptId>('ram');
+  const [showGlossary, setShowGlossary] = useState(false);
 
-  const compiled = useMemo(() => compileTrace(config), [config]);
-
-  const visibleSteps = useMemo(() => {
-    if (granularity === 'micro') return compiled.steps;
-    return compiled.steps.filter((s) => s.isMacro);
-  }, [compiled.steps, granularity]);
-
-  const safeIdx = Math.min(currentIdx, Math.max(0, visibleSteps.length - 1));
-  const currentStep = visibleSteps[safeIdx] ?? compiled.steps[0];
-
-  const handleGranularityChange = useCallback(
-    (nextGran: Granularity) => {
-      if (nextGran === granularity) return;
-      const activeStepId = currentStep?.id ?? 0;
-      const nextList =
-        nextGran === 'micro' ? compiled.steps : compiled.steps.filter((s) => s.isMacro);
-      let closest = 0;
-      for (let i = 0; i < nextList.length; i++) {
-        if (nextList[i].id <= activeStepId) {
-          closest = i;
-        } else {
-          break;
-        }
-      }
-      setGranularity(nextGran);
-      setCurrentIdx(closest);
-    },
-    [granularity, currentStep, compiled.steps]
-  );
-
-  const resetTrace = useCallback(() => {
-    setIsPlaying(false);
-    setCurrentIdx(0);
-  }, []);
-
-  const handlePresetSelect = useCallback((presetId: string) => {
-    setIsPlaying(false);
-    setConfig(presetToConfig(presetId));
-    setCurrentIdx(0);
-  }, []);
-
-  const handleModeChange = useCallback((mode: Mode) => {
-    setIsPlaying(false);
-    if (mode === 'bonus') {
-      setConfig(presetToConfig('bonus_multi_fd'));
-    } else {
-      setConfig(presetToConfig('standard'));
-    }
-    setCurrentIdx(0);
-  }, []);
-
-  const handleBufferSizeChange = useCallback((size: number) => {
-    setIsPlaying(false);
-    setConfig((prev) => ({
-      ...prev,
-      bufferSize: size,
-    }));
-    setCurrentIdx(0);
-  }, []);
-
-  const handleApplyFileEdits = useCallback(
-    (files: VirtualFileConfig[], callSequence: number[]) => {
-      setIsPlaying(false);
-      setConfig((prev) => ({
-        ...prev,
-        files,
-        callSequence,
-        presetId: 'custom',
-      }));
-      setCurrentIdx(0);
-    },
-    []
-  );
-
-  const stepForward = useCallback(() => {
-    setCurrentIdx((idx) => Math.min(visibleSteps.length - 1, idx + 1));
-  }, [visibleSteps.length]);
-
-  const stepBack = useCallback(() => {
-    setIsPlaying(false);
-    setCurrentIdx((idx) => Math.max(0, idx - 1));
-  }, []);
-
-  const togglePlay = useCallback(() => {
-    setIsPlaying((playing) => {
-      if (!playing && safeIdx >= visibleSteps.length - 1) {
-        setCurrentIdx(0);
-      }
-      return !playing;
-    });
-  }, [safeIdx, visibleSteps.length]);
-
-  const nextSyscall = useCallback(() => {
-    setIsPlaying(false);
-    for (let i = safeIdx + 1; i < visibleSteps.length; i++) {
-      const st = visibleSteps[i];
-      if (st.isSyscallMarker || st.phase === 'kernel_io') {
-        setCurrentIdx(i);
-        return;
-      }
-    }
-    setCurrentIdx(visibleSteps.length - 1);
-  }, [safeIdx, visibleSteps]);
-
-  const nextCall = useCallback(() => {
-    setIsPlaying(false);
-    const curCall = currentStep.callIndex;
-    for (let i = safeIdx + 1; i < visibleSteps.length; i++) {
-      if (visibleSteps[i].callIndex > curCall) {
-        setCurrentIdx(i);
-        return;
-      }
-    }
-    setCurrentIdx(visibleSteps.length - 1);
-  }, [safeIdx, visibleSteps, currentStep.callIndex]);
-
-  const prevCall = useCallback(() => {
-    setIsPlaying(false);
-    const curCall = currentStep.callIndex;
-    const startOfCurrent = visibleSteps.findIndex((s) => s.callIndex === curCall);
-    if (safeIdx > startOfCurrent && startOfCurrent >= 0) {
-      setCurrentIdx(startOfCurrent);
-      return;
-    }
-    const targetCall = Math.max(0, curCall - 1);
-    const startOfPrev = visibleSteps.findIndex((s) => s.callIndex === targetCall);
-    setCurrentIdx(Math.max(0, startOfPrev));
-  }, [safeIdx, visibleSteps, currentStep.callIndex]);
+  const switchChapter = (next: ChapterId) => {
+    setChapter(next);
+    const ch = CHAPTERS.find((c) => c.id === next);
+    if (ch) setSelectedConcept(ch.defaultConcept);
+  };
 
   useEffect(() => {
-    if (!isPlaying) return;
-    const timer = window.setInterval(() => {
-      setCurrentIdx((idx) => {
-        if (idx >= visibleSteps.length - 1) {
-          setIsPlaying(false);
-          return idx;
-        }
-        return idx + 1;
-      });
-    }, speedMs);
-    return () => window.clearInterval(timer);
-  }, [isPlaying, speedMs, visibleSteps.length]);
-
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setShowFileEditor(false);
-        setShowEvalDrawer(false);
-        return;
-      }
-
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
-      if (showFileEditor || showEvalDrawer) return;
-
-      if (e.key === 'ArrowRight' || e.key === 'l') {
-        e.preventDefault();
-        setIsPlaying(false);
-        stepForward();
-      } else if (e.key === 'ArrowLeft' || e.key === 'h') {
-        e.preventDefault();
-        stepBack();
-      } else if (e.key === ' ') {
-        e.preventDefault();
-        togglePlay();
-      } else if (e.key === 's' || e.key === 'S') {
-        e.preventDefault();
-        nextSyscall();
-      } else if (e.key === 'c' || e.key === 'C') {
-        e.preventDefault();
-        nextCall();
-      } else if (e.key === 'r' || e.key === 'R') {
-        e.preventDefault();
-        resetTrace();
-      } else if (e.key === 'm' || e.key === 'M') {
-        e.preventDefault();
-        handleGranularityChange(granularity === 'micro' ? 'macro' : 'micro');
-      }
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setShowGlossary(false);
     };
-
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [
-    showFileEditor,
-    showEvalDrawer,
-    stepForward,
-    stepBack,
-    togglePlay,
-    nextSyscall,
-    nextCall,
-    resetTrace,
-    handleGranularityChange,
-    granularity,
-  ]);
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   return (
-    <div className="app-shell">
-      <TopBar
-        config={config}
-        granularity={granularity}
-        onModeChange={handleModeChange}
-        onPresetSelect={handlePresetSelect}
-        onBufferSizeChange={handleBufferSizeChange}
-        onGranularityChange={handleGranularityChange}
-        onOpenFileEditor={() => setShowFileEditor(true)}
-        onOpenEvalDrawer={() => setShowEvalDrawer(true)}
-      />
+    <div className="app-root">
+      {/* Clean Single-Row Guided Navigation Bar */}
+      <header className="nav-header">
+        <div className="nav-brand">
+          <h1 className="nav-title">get_next_line</h1>
+          <span className="nav-sub">Visual Systems Mental Model</span>
+        </div>
 
-      <TransportBar
-        visibleSteps={visibleSteps}
-        currentIdx={safeIdx}
-        currentStep={currentStep}
-        isPlaying={isPlaying}
-        speedMs={speedMs}
-        onReset={resetTrace}
-        onPrevCall={prevCall}
-        onStepBack={stepBack}
-        onTogglePlay={togglePlay}
-        onStepForward={stepForward}
-        onNextSyscall={nextSyscall}
-        onNextCall={nextCall}
-        onScrub={(idx) => {
-          setIsPlaying(false);
-          setCurrentIdx(idx);
-        }}
-        onSpeedChange={setSpeedMs}
-      />
+        <nav className="chapter-tabs" aria-label="Guided Visual Chapters">
+          {CHAPTERS.map((ch) => (
+            <button
+              key={ch.id}
+              id={`tab-chapter-${ch.id}`}
+              type="button"
+              className={`chapter-tab ${chapter === ch.id ? 'active' : ''}`}
+              onClick={() => switchChapter(ch.id)}
+            >
+              <span className="chapter-num">{ch.num}</span>
+              <span>{ch.label}</span>
+            </button>
+          ))}
+        </nav>
 
-      <StagePipeline step={currentStep} />
+        <button
+          id="btn-open-glossary"
+          type="button"
+          className="ui-btn glossary-btn"
+          onClick={() => setShowGlossary(true)}
+        >
+          All 20 Concepts
+        </button>
+      </header>
 
-      <StepNarrative step={currentStep} truncated={compiled.truncated} />
+      {/* Main Two-Column Canvas: Interactive Diagram (Left) + Single-Concept Explainer (Right) */}
+      <main className="workspace-layout">
+        <section className="diagram-column">
+          {chapter === 1 && (
+            <SystemMapDiagram
+              selectedId={selectedConcept}
+              onSelectConcept={setSelectedConcept}
+              onGoNextChapter={() => switchChapter(2)}
+            />
+          )}
+          {chapter === 2 && (
+            <MemoryMapDiagram
+              selectedId={selectedConcept}
+              onSelectConcept={setSelectedConcept}
+              onGoPrevChapter={() => switchChapter(1)}
+              onGoNextChapter={() => switchChapter(3)}
+            />
+          )}
+          {chapter === 3 && (
+            <SyscallKernelDiagram
+              selectedId={selectedConcept}
+              onSelectConcept={setSelectedConcept}
+              onGoPrevChapter={() => switchChapter(2)}
+              onGoNextChapter={() => switchChapter(4)}
+            />
+          )}
+          {chapter === 4 && (
+            <LiveFlowDiagram
+              selectedId={selectedConcept}
+              onSelectConcept={setSelectedConcept}
+              onGoPrevChapter={() => switchChapter(3)}
+            />
+          )}
+        </section>
 
-      <main className="schematic-grid-2col">
-        <MemoryPanel step={currentStep} />
-        <HardwareKernelPanel step={currentStep} />
+        <ConceptInspector
+          selectedId={selectedConcept}
+          onSelectConcept={setSelectedConcept}
+        />
       </main>
 
-      <footer className="footer-bar">
-        <span>
-          Shortcuts: <span className="kbd">←</span>/<span className="kbd">→</span> Step ·{' '}
-          <span className="kbd">Space</span> Play · <span className="kbd">S</span> Next Syscall ·{' '}
-          <span className="kbd">C</span> Next Call · <span className="kbd">M</span> Micro/Macro ·{' '}
-          <span className="kbd">R</span> Reset
-        </span>
-        <span>
-          Timeline ticks: <strong style={{ color: 'var(--ring0-ink)' }}>Top Ochre</strong> = SYSCALL ·{' '}
-          <strong style={{ color: 'var(--ok-ink)' }}>Bottom Green</strong> = Return
-        </span>
-      </footer>
-
-      {showFileEditor && (
-        <FileEditorDrawer
-          config={config}
-          onApply={handleApplyFileEdits}
-          onClose={() => setShowFileEditor(false)}
-        />
-      )}
-
-      {showEvalDrawer && (
-        <EvalCompendiumDrawer
-          onLoadDemoPreset={handlePresetSelect}
-          onClose={() => setShowEvalDrawer(false)}
+      {showGlossary && (
+        <ConceptIndexDrawer
+          selectedId={selectedConcept}
+          onSelectConcept={setSelectedConcept}
+          onClose={() => setShowGlossary(false)}
         />
       )}
     </div>

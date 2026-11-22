@@ -1,14 +1,11 @@
-# `get_next_line` — Physical Systems & Kernel Mental Model Visualizer
+# `get_next_line` — Interactive Visual Systems Mental Model
 
-An interactive, spoiler-free **Light Technical Blueprint** mental-model visualizer for 42's `get_next_line(int fd)`. Zero `get_next_line` C implementation code is shown — instead, it traces the real physical journey across User Space RAM (`.text`, `.bss`, Stack, Heap), x86-64 CPU registers, hardware `syscall`/`sysret` privilege ring transitions (`Ring 3 ↔ Ring 0`), and Linux kernel internals (`sys_call_table`, `fdtable`, `struct file` / `f_pos`, `access_ok()`, Page Cache, and SSD backing storage).
+A spoiler-free, **diagram-first interactive visual guide** to 42's `get_next_line(int fd)` — showing zero `get_next_line` C implementation code. Instead of a text-heavy debugger, it teaches the full physical mental model across **4 structured visual chapters** + an interactive **20-concept encyclopedia** (`CPU`, `RAM`, `Registers`, `Ring 3/0`, `User Space`, `Kernel Space`, `.text`, `BUFFER_SIZE`, `buffer`, `Heap`, `Stack`, `.bss`, `libc read()`, `syscall`/`sysret`, `sys_call_table`, `fdtable`, `struct file`, `inode`, `Page Cache`, `SSD`):
 
-## Features
-
-- **8-Stage Physical Execution Pipeline**: Visual step-by-step flow (`Heap buffer` → `4 CPU Regs` → `SYSCALL Ring 3→0` → `Kernel Check` → `SSD/Cache → RAM` → `SYSRET Ring 0→3` → `'\0' & Stash` → `Line & Leftover`).
-- **Physical Memory Anatomy (Left Half — Ring 3)**: Contrasts compile-time `BUFFER_SIZE` (0 B data RAM, baked in `.text`) vs physical Heap `buffer` (`BUFFER_SIZE + 1`), byte-level Heap blocks & freed tombstones, `.bss` static pointer persistence vs temporary Stack frame destruction, and returned line stream.
-- **CPU Hardware & Linux Kernel (Right Half — Ring 3 ⇄ Ring 0)**: Live x86-64 ABI registers (`rax`, `rdi`, `rsi`, `rdx`, `rip`, `rcx`, `r11`, `rsp`), Ring 3/0 security wall, `sys_call_table[0]`, Process `fdtable`, `access_ok()` protection check, `struct file` `f_pos`, and 4 KB Page Cache vs SSD byte tape.
-- **Mandatory & 42 Bonus (Multi-FD) Modes**: Compare single `.bss` `stash` against `stash[fd]` with interleaved `fd=3` & `fd=4` reads.
-- **Curated 42 Edge Cases, Custom File Editor & 13-Topic Eval Q&A**: Test `BUFFER_SIZE=1`, `BUFFER_SIZE=42`, missing trailing `\n`, `\n\n\n`, empty file, and closed-FD `-EBADF`.
+1. **System Map** — Interactive hardware & OS context diagram connecting User Space RAM, CPU Registers/Rings, Kernel tables, Page Cache, and SSD.
+2. **Memory Map** — Visual Virtual RAM Tower comparing `BUFFER_SIZE` (`.text`) vs physical `buffer` (`Heap`), `BUFFER_SIZE=10 MB` Stack crash test, and `.bss` survival after Stack frames vanish.
+3. **Syscall & Kernel** — Concentric Privilege Rings (`Ring 3 ↔ Ring 0`), live 6-beat register sequence, and the 3-table Linux file chain (`fdtable → struct file → inode → Page Cache ↔ SSD`), including Cache Hit and `-EBADF` modes.
+4. **Live GNL Flow** — Interactive decision flowchart paired with a live animated data-flow machine (supporting all 42 edge cases, custom file editing, and 42 Bonus Multi-FD).
 
 ## Run Locally
 
