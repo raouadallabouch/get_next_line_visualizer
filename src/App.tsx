@@ -1,9 +1,9 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { CodePanel } from './components/CodePanel';
 import { EvalCompendiumDrawer } from './components/EvalCompendiumDrawer';
 import { FileEditorDrawer } from './components/FileEditorDrawer';
 import { HardwareKernelPanel } from './components/HardwareKernelPanel';
 import { MemoryPanel } from './components/MemoryPanel';
+import { StagePipeline } from './components/StagePipeline';
 import { StepNarrative } from './components/StepNarrative';
 import { TopBar } from './components/TopBar';
 import { TransportBar } from './components/TransportBar';
@@ -150,7 +150,6 @@ export const App: React.FC = () => {
   const prevCall = useCallback(() => {
     setIsPlaying(false);
     const curCall = currentStep.callIndex;
-    // If already mid-call, jump to start of current call; if at start, jump to previous call
     const startOfCurrent = visibleSteps.findIndex((s) => s.callIndex === curCall);
     if (safeIdx > startOfCurrent && startOfCurrent >= 0) {
       setCurrentIdx(startOfCurrent);
@@ -161,7 +160,6 @@ export const App: React.FC = () => {
     setCurrentIdx(Math.max(0, startOfPrev));
   }, [safeIdx, visibleSteps, currentStep.callIndex]);
 
-  // Playback interval
   useEffect(() => {
     if (!isPlaying) return;
     const timer = window.setInterval(() => {
@@ -176,7 +174,6 @@ export const App: React.FC = () => {
     return () => window.clearInterval(timer);
   }, [isPlaying, speedMs, visibleSteps.length]);
 
-  // Global keyboard shortcuts
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -262,10 +259,11 @@ export const App: React.FC = () => {
         onSpeedChange={setSpeedMs}
       />
 
+      <StagePipeline step={currentStep} />
+
       <StepNarrative step={currentStep} truncated={compiled.truncated} />
 
-      <main className="schematic-grid">
-        <CodePanel step={currentStep} mode={config.mode} bufferSize={config.bufferSize} />
+      <main className="schematic-grid-2col">
         <MemoryPanel step={currentStep} />
         <HardwareKernelPanel step={currentStep} />
       </main>
@@ -279,7 +277,7 @@ export const App: React.FC = () => {
         </span>
         <span>
           Timeline ticks: <strong style={{ color: 'var(--ring0-ink)' }}>Top Ochre</strong> = SYSCALL ·{' '}
-          <strong style={{ color: 'var(--ok-ink)' }}>Bottom Green</strong> = GNL Return
+          <strong style={{ color: 'var(--ok-ink)' }}>Bottom Green</strong> = Return
         </span>
       </footer>
 

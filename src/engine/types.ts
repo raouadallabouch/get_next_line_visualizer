@@ -172,15 +172,14 @@ export interface TraceStep {
   id: number;
   callIndex: number;
   activeFd: number;
-  /** True if this step appears in Macro (C-level) mode as well as Micro mode */
+  /** Physical mental-model stage index: 0=Ready, 1..8=Active cycle stage */
+  stageIndex: 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+  /** True if this step appears in Macro mode as well as Micro mode */
   isMacro: boolean;
   phase: StepPhase;
   title: string;
   explanation: string;
   evalTip: EvalTip;
-  cLine: number;
-  asmSection: 'gnl_text' | 'libc_read' | 'kernel_entry' | null;
-  asmLine: number | null;
   isSyscallMarker: boolean;
   isReturnMarker: boolean;
   cpu: CpuState;

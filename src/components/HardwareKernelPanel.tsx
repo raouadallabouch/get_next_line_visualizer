@@ -130,8 +130,8 @@ export const HardwareKernelPanel: React.FC<HardwareKernelPanelProps> = ({ step }
   return (
     <section className="schematic-col" aria-label="CPU Hardware Registers and Linux Kernel Internals">
       <div className="col-header">
-        <h3 className="col-title">3. CPU Hardware &amp; Linux Kernel</h3>
-        <span className="col-addr-hint">x86-64 ABI · Ring 0 (0xffff…)</span>
+        <h3 className="col-title">CPU HARDWARE &amp; LINUX KERNEL (Ring 3 ⇄ Ring 0)</h3>
+        <span className="col-addr-hint">x86-64 ABI · Kernel Space 0xffff…</span>
       </div>
 
       <div className="col-body">

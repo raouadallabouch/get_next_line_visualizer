@@ -114,9 +114,9 @@ export const TopBar: React.FC<TopBarProps> = ({
             type="button"
             className={granularity === 'macro' ? 'active' : ''}
             onClick={() => onGranularityChange('macro')}
-            title="C-level memory & read() milestones"
+            title="Key memory & read() milestones"
           >
-            Macro (C)
+            Macro (Key Steps)
           </button>
         </div>
 

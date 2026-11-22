@@ -13,28 +13,28 @@ export const EVAL_QUESTIONS: EvalQuestionItem[] = [
   {
     id: 'q-plus-one',
     category: 'Memory',
-    question: 'Why do we allocate malloc(BUFFER_SIZE + 1) instead of malloc(BUFFER_SIZE)?',
+    question: 'Why must the Heap read buffer have size `BUFFER_SIZE + 1` instead of `BUFFER_SIZE`?',
     answer:
-      'The Linux `read()` syscall operates on raw byte streams (files can be binary) and NEVER appends a null terminator (`\\0`). To safely pass `buffer` into C string functions like `ft_strjoin` or `ft_strlen`, we must manually write `buffer[bytes_read] = \'\\0\'`. If `read()` fills all `BUFFER_SIZE` bytes, index `BUFFER_SIZE` requires that extra +1 byte to avoid a 1-byte Heap buffer overflow.',
-    keyTakeaway: 'read() returns raw bytes without \\0; the +1 byte guarantees space for buffer[bytes_read] = \'\\0\'.',
+      'The Linux `read()` syscall operates on raw byte streams (files can be binary) and NEVER appends a null terminator (`\\0`). To safely treat `buffer` as a C string when scanning or joining bytes in User Space, you must manually write `\\0` right after the last byte read. If `read()` fills all `BUFFER_SIZE` bytes, that extra `+1` byte prevents a 1-byte Heap overflow.',
+    keyTakeaway: 'read() copies raw bytes with no \\0; the +1 byte guarantees room for the null terminator.',
     demoPresetId: 'standard',
   },
   {
     id: 'q-heap-vs-stack',
     category: 'Memory',
-    question: 'Why must `buffer` be allocated on the Heap with malloc() instead of `char buffer[BUFFER_SIZE + 1]` on the Stack?',
+    question: 'Why must `buffer` live on the Heap rather than as a local fixed array on the Stack?',
     answer:
-      'On Linux, the default process stack limit (`ulimit -s`) is typically 8 MB. During 42 evaluation, testers compile with `-D BUFFER_SIZE=10000000` (10 MB) or larger. A stack-allocated VLA/array of 10 MB immediately overflows the stack frame and crashes with SIGSEGV. Heap allocations via `malloc()` use `brk`/`mmap` and safely support huge `BUFFER_SIZE` values.',
-    keyTakeaway: 'Large BUFFER_SIZE (e.g. 10M) overflows the 8 MB Stack (SIGSEGV); Heap via malloc() handles it safely.',
+      'On Linux, the default process stack limit (`ulimit -s`) is typically 8 MB. During 42 evaluation, testers compile with huge values like `-D BUFFER_SIZE=10000000` (10 MB) or larger. Placing a 10 MB array on the Stack immediately overflows the stack frame and crashes with `SIGSEGV`. Heap allocations grow via `brk`/`mmap` and handle huge `BUFFER_SIZE` values safely.',
+    keyTakeaway: 'Huge BUFFER_SIZE overflows the 8 MB Stack (SIGSEGV); Heap allocation handles it safely.',
     demoPresetId: 'large_buffer',
   },
   {
     id: 'q-static-bss',
     category: 'Memory',
-    question: 'Where does `static char *stash` live in virtual memory, and why does it survive after get_next_line() returns?',
+    question: 'Where does the `static` pointer live in virtual memory, and why does it survive after a call returns?',
     answer:
-      'An uninitialized `static` pointer lives in the `.bss` (Block Started by Symbol) segment, which the OS ELF loader zero-initializes (`NULL`) before `main()` runs. Unlike local variables (`buffer`, `bytes_read`, `line`) whose Stack frame is popped when `get_next_line()` executes `ret`, `.bss` persists for the entire lifetime of the process — preserving the Heap address of leftover bytes after `\\n` for the next call.',
-    keyTakeaway: 'The pointer `stash` lives in .bss (process lifetime); the characters it points to live on the Heap.',
+      'An uninitialized `static` pointer lives in the `.bss` (Block Started by Symbol) segment, which the OS ELF loader zero-initializes (`NULL`) before `main()` runs. Unlike local Stack variables whose frame is popped on return, `.bss` persists for the entire process lifetime — preserving the Heap address of leftover bytes after `\\n` for the next call.',
+    keyTakeaway: 'The static pointer lives in .bss (process lifetime); the leftover characters live on the Heap.',
     demoPresetId: 'standard',
   },
   {
@@ -42,7 +42,7 @@ export const EVAL_QUESTIONS: EvalQuestionItem[] = [
     category: 'CPU & Syscall',
     question: 'Is `read()` in C the Linux Kernel itself? How does it talk to the Kernel on x86-64?',
     answer:
-      'No. `read()` is a small User-Space wrapper function in `libc` running in Ring 3. It follows the x86-64 Linux syscall ABI: puts syscall number `0` (`__NR_read`) in `rax`, `fd` in `rdi`, `buffer` pointer in `rsi`, and `BUFFER_SIZE` in `rdx`, then executes the hardware `syscall` instruction.',
+      'No. `read()` is a small User-Space wrapper function in `libc` running in Ring 3. It follows the x86-64 Linux syscall ABI: puts syscall number `0` (`__NR_read`) in `rax`, `fd` in `rdi`, the `buffer` Heap address in `rsi`, and `BUFFER_SIZE` in `rdx`, then executes the hardware `syscall` instruction.',
     keyTakeaway: 'libc read() sets rax=0, rdi=fd, rsi=buf, rdx=count, then executes hardware `syscall`.',
     demoPresetId: 'standard',
   },
@@ -51,7 +51,7 @@ export const EVAL_QUESTIONS: EvalQuestionItem[] = [
     category: 'CPU & Syscall',
     question: 'What exact atomic steps does the CPU hardware perform when it executes `syscall` and `sysret`?',
     answer:
-      'On `syscall`: (1) saves next User-Space `rip` into `rcx` and `rflags` into `r11`, (2) switches hardware privilege level from Ring 3 (User Mode) to Ring 0 (Kernel Mode), and (3) jumps `rip` to the protected Kernel entry address in `MSR_LSTAR` (`entry_SYSCALL_64`). On `sysret`: reverses the switch (Ring 0 -> Ring 3) and restores `rip <- rcx` back into `libc`.',
+      'On `syscall`: (1) saves next User-Space `rip` into `rcx` (and `rflags` into `r11`), (2) switches hardware privilege level from Ring 3 (User Mode) to Ring 0 (Kernel Mode), and (3) jumps `rip` to the protected Kernel entry address in `MSR_LSTAR` (`entry_SYSCALL_64`). On `sysret`: reverses the switch (Ring 0 -> Ring 3) and restores `rip <- rcx` back into `libc`.',
     keyTakeaway: 'syscall: save rip->rcx, Ring 3->0, jump LSTAR. sysret: Ring 0->3, restore rip<-rcx.',
     demoPresetId: 'standard',
   },
@@ -60,8 +60,8 @@ export const EVAL_QUESTIONS: EvalQuestionItem[] = [
     category: 'CPU & Syscall',
     question: 'Why is `BUFFER_SIZE=1` drastically slower than `BUFFER_SIZE=4096` even when the file is already in RAM?',
     answer:
-      'Even after the first read loads a 4 KB page from SSD into the Kernel Page Cache (RAM), `BUFFER_SIZE=1` still executes one full Ring 3 -> Ring 0 `syscall`/`sysret` transition, `fdtable` lookup, `access_ok()` check, and `copy_to_user()` for EVERY SINGLE BYTE — plus O(N²) `malloc`/`ft_strjoin` reallocations in User Space. A larger `BUFFER_SIZE` amortizes one syscall over thousands of bytes scanned purely in User Space.',
-    keyTakeaway: 'Ring 3<->0 transitions + KPTI + repeated malloc/strjoin dominate when BUFFER_SIZE=1.',
+      'Even after the first read loads a 4 KB page from SSD into the Kernel Page Cache (RAM), `BUFFER_SIZE=1` still executes one full Ring 3 -> Ring 0 `syscall`/`sysret` transition, `fdtable` lookup, `access_ok()` check, and `copy_to_user()` for EVERY SINGLE BYTE — plus repeated Heap reallocations when growing the accumulated stash. A larger `BUFFER_SIZE` amortizes one syscall over thousands of bytes scanned purely in User Space.',
+    keyTakeaway: 'Ring 3<->0 transitions + repeated Heap growth dominate when BUFFER_SIZE=1.',
     demoPresetId: 'bs1_storm',
   },
   {

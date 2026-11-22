@@ -1,21 +1,20 @@
-# `get_next_line` — Systems & Kernel Visualizer
+# `get_next_line` — Physical Systems & Kernel Mental Model Visualizer
 
-An interactive, textbook-grade technical schematic tracing 42's `get_next_line(int fd)` from C user-space code and virtual memory segments (`.text`, `.bss`, Stack, Heap) down through the `libc` `read()` wrapper, x86-64 CPU registers, hardware `syscall`/`sysret` privilege ring transitions (`Ring 3 ↔ Ring 0`), and Linux kernel VFS internals (`sys_call_table`, `fdtable`, `struct file` / `f_pos`, `access_ok()`, Page Cache, and SSD backing storage).
+An interactive, spoiler-free **Light Technical Blueprint** mental-model visualizer for 42's `get_next_line(int fd)`. Zero `get_next_line` C implementation code is shown — instead, it traces the real physical journey across User Space RAM (`.text`, `.bss`, Stack, Heap), x86-64 CPU registers, hardware `syscall`/`sysret` privilege ring transitions (`Ring 3 ↔ Ring 0`), and Linux kernel internals (`sys_call_table`, `fdtable`, `struct file` / `f_pos`, `access_ok()`, Page Cache, and SSD backing storage).
 
 ## Features
 
-- **Physical Memory Anatomy**: Visually distinguishes compile-time `BUFFER_SIZE` (baked as an immediate operand in `.text`, 0 bytes of runtime data RAM) from the physical `buffer` (`malloc(BUFFER_SIZE + 1)` on the Heap), Stack frame lifetime vs `.bss` static pointer persistence, byte-level Hex/ASCII cells, freed tombstones, and leak accounting.
-- **Full x86-64 & Linux Kernel Pipeline**: Steps through `rax=0`, `rdi=fd`, `rsi=buffer`, `rdx=BUFFER_SIZE`, hardware `syscall` (`rip → rcx`, `Ring 3 → Ring 0`, `MSR_LSTAR`), `sys_call_table[0] → __x64_sys_read`, `fdtable` lookup (including `-EBADF`), `access_ok()` user-space boundary verification, 4 KB Page Cache miss (SSD fetch) vs cache hit, `copy_to_user()`, `f_pos` update, and `sysret`.
-- **Micro & Macro Granularity**: Toggle seamlessly between deep CPU/Kernel micro-stepping and fast C-level memory stepping with full time-travel scrubbing.
-- **Mandatory & 42 Bonus (Multi-FD) Modes**: Compare single `static char *stash` against `static char *stash[FD_MAX]` with interleaved `fd=3` and `fd=4` reads and independent kernel `struct file` offsets.
-- **Curated 42 Edge-Case Presets & Custom File Editor**: Test `BUFFER_SIZE=1` syscall storms, large `BUFFER_SIZE=42`/`1024` zero-syscall calls, missing trailing `\n`, consecutive `\n\n\n`, empty files, and closed-FD `-EBADF` cleanup.
-- **42 Eval Defense Compendium**: Contextual evaluation Q&As on every step plus a searchable 13-topic reference drawer with one-click proof scenarios.
+- **8-Stage Physical Execution Pipeline**: Visual step-by-step flow (`Heap buffer` → `4 CPU Regs` → `SYSCALL Ring 3→0` → `Kernel Check` → `SSD/Cache → RAM` → `SYSRET Ring 0→3` → `'\0' & Stash` → `Line & Leftover`).
+- **Physical Memory Anatomy (Left Half — Ring 3)**: Contrasts compile-time `BUFFER_SIZE` (0 B data RAM, baked in `.text`) vs physical Heap `buffer` (`BUFFER_SIZE + 1`), byte-level Heap blocks & freed tombstones, `.bss` static pointer persistence vs temporary Stack frame destruction, and returned line stream.
+- **CPU Hardware & Linux Kernel (Right Half — Ring 3 ⇄ Ring 0)**: Live x86-64 ABI registers (`rax`, `rdi`, `rsi`, `rdx`, `rip`, `rcx`, `r11`, `rsp`), Ring 3/0 security wall, `sys_call_table[0]`, Process `fdtable`, `access_ok()` protection check, `struct file` `f_pos`, and 4 KB Page Cache vs SSD byte tape.
+- **Mandatory & 42 Bonus (Multi-FD) Modes**: Compare single `.bss` `stash` against `stash[fd]` with interleaved `fd=3` & `fd=4` reads.
+- **Curated 42 Edge Cases, Custom File Editor & 13-Topic Eval Q&A**: Test `BUFFER_SIZE=1`, `BUFFER_SIZE=42`, missing trailing `\n`, `\n\n\n`, empty file, and closed-FD `-EBADF`.
 
-## Development
+## Run Locally
 
 ```bash
+git clone https://github.com/raouadallabouch/get_next_line_visualizer.git
+cd get_next_line_visualizer
 npm install
-npm run dev      # Start local dev server
-npm test         # Run Vitest engine unit tests
-npm run build    # Type-check & build static production bundle (dist/)
+npm run dev
 ```

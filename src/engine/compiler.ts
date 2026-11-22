@@ -2,14 +2,11 @@ import {
   BssSlot,
   ByteCell,
   CompiledTrace,
-  CpuState,
   DataBusTransfer,
   EvalTip,
   FdTableEntry,
   HeapBlock,
   KernelState,
-  MemoryState,
-  MetricsState,
   OpenFileDesc,
   RegisterEntry,
   ReturnedLineRecord,
@@ -156,12 +153,10 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
   const bufferSize = Math.max(0, Math.floor(config.bufferSize));
   const mode = config.mode;
 
-  // Deterministic heap bump allocator
   let nextHeapAddr = HEAP_BASE;
   let blockSeq = 1;
   const heapBlocks: InternalHeapBlock[] = [];
 
-  // Stash state by fd (in mandatory mode, always slot 0 representing single static char *stash)
   const stashMap = new Map<number, InternalStash>();
   const trackedFds =
     mode === 'bonus'
@@ -175,7 +170,6 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
 
   const getStashKey = (fd: number): number => (mode === 'bonus' ? fd : 0);
 
-  // Kernel open file descriptions
   const openFiles = new Map<number, InternalOpenFile>();
   config.files.forEach((f, idx) => {
     if (f.isOpen) {
@@ -193,7 +187,6 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
     }
   });
 
-  // Live metrics
   let syscallCount = 0;
   let pageCacheHits = 0;
   let ssdPageFetches = 0;
@@ -202,21 +195,19 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
   let freeCount = 0;
   const returnedLines: ReturnedLineRecord[] = [];
 
-  // Current CPU register state
   const regState: Record<RegisterEntry['name'], { hex: string; meaning: string; role: RegisterEntry['role'] }> = {
     rax: { hex: toHex64(0n), meaning: 'idle', role: 'return' },
     rdi: { hex: toHex64(0n), meaning: 'arg1 (fd)', role: 'arg' },
-    rsi: { hex: toHex64(0n), meaning: 'arg2 (buffer*)', role: 'arg' },
+    rsi: { hex: toHex64(0n), meaning: 'arg2 (buffer Heap addr)', role: 'arg' },
     rdx: { hex: toHex64(0n), meaning: 'arg3 (BUFFER_SIZE)', role: 'arg' },
-    rip: { hex: '0x0000000000401120', meaning: 'main() -> ready', role: 'control' },
-    rcx: { hex: toHex64(0n), meaning: 'saved user rip', role: 'saved' },
-    r11: { hex: toHex64(0x246n), meaning: 'rflags (IF=1)', role: 'saved' },
+    rip: { hex: '0x0000000000401120', meaning: 'User Program ready', role: 'control' },
+    rcx: { hex: toHex64(0n), meaning: 'saved User rip', role: 'saved' },
+    r11: { hex: toHex64(0x246n), meaning: 'saved CPU flags', role: 'saved' },
     rsp: { hex: USER_RSP, meaning: 'User Stack ptr', role: 'control' },
   };
 
-  // Current stack frame state
   let stackActive = false;
-  let stackFrameLabel = 'main()';
+  let stackFrameLabel = 'Caller (idle)';
   let stackFdVal = '—';
   let stackBufVal = '—';
   let stackBytesVal = '—';
@@ -231,7 +222,6 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
     cellRole?: 'data' | 'extracted' | 'leftover'
   ): InternalHeapBlock => {
     const addr = nextHeapAddr;
-    // Align chunk to 16 bytes + 16-byte simulated malloc metadata header
     const alignedAdvance = BigInt(Math.ceil((Math.max(1, size) + 16) / 16) * 16);
     nextHeapAddr += alignedAdvance;
     mallocCount += 1;
@@ -283,7 +273,7 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       const blk = st.blockId ? heapBlocks.find((b) => b.id === st.blockId) : null;
       return [
         {
-          name: 'stash',
+          name: 'static stash*',
           fd: config.files[0]?.fd ?? 3,
           address: toHexAddr(BSS_BASE),
           pointsTo: blk && blk.status === 'live' ? blk.address : null,
@@ -298,7 +288,7 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       const st = stashMap.get(fdKey) ?? { blockId: null, text: null };
       const blk = st.blockId ? heapBlocks.find((b) => b.id === st.blockId) : null;
       return {
-        name: `stash[${fdKey}]`,
+        name: `static stash[${fdKey}]`,
         fd: fdKey,
         address: toHexAddr(BSS_BASE + BigInt(fdKey * 8)),
         pointsTo: blk && blk.status === 'live' ? blk.address : null,
@@ -310,27 +300,9 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
 
   const buildFdTable = (lookupFd: number | null): FdTableEntry[] => {
     const entries: FdTableEntry[] = [
-      {
-        fd: 0,
-        label: 'stdin (tty)',
-        structFileAddr: '0xffff88810a100000',
-        isActiveLookup: lookupFd === 0,
-        isOpen: true,
-      },
-      {
-        fd: 1,
-        label: 'stdout (tty)',
-        structFileAddr: '0xffff88810a100200',
-        isActiveLookup: lookupFd === 1,
-        isOpen: true,
-      },
-      {
-        fd: 2,
-        label: 'stderr (tty)',
-        structFileAddr: '0xffff88810a100400',
-        isActiveLookup: lookupFd === 2,
-        isOpen: true,
-      },
+      { fd: 0, label: 'stdin (tty)', structFileAddr: '0xffff88810a100000', isActiveLookup: lookupFd === 0, isOpen: true },
+      { fd: 1, label: 'stdout (tty)', structFileAddr: '0xffff88810a100200', isActiveLookup: lookupFd === 1, isOpen: true },
+      { fd: 2, label: 'stderr (tty)', structFileAddr: '0xffff88810a100400', isActiveLookup: lookupFd === 2, isOpen: true },
     ];
 
     const fdsToShow = new Set<number>();
@@ -378,14 +350,12 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
   interface EmitParams {
     callIndex: number;
     activeFd: number;
+    stageIndex: TraceStep['stageIndex'];
     isMacro: boolean;
     phase: StepPhase;
     title: string;
     explanation: string;
     evalTip: EvalTip;
-    cLine: number;
-    asmSection: TraceStep['asmSection'];
-    asmLine: number | null;
     isSyscallMarker?: boolean;
     isReturnMarker?: boolean;
     ring: 3 | 0;
@@ -428,38 +398,10 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
 
     const stackSlots: StackSlot[] = stackActive
       ? [
-          {
-            name: 'fd',
-            type: 'int',
-            address: '0x7fffffffde3c',
-            value: stackFdVal,
-            note: 'parameter',
-            changed: changedStackSet.has('fd'),
-          },
-          {
-            name: 'buffer',
-            type: 'char *',
-            address: '0x7fffffffde30',
-            value: stackBufVal,
-            note: '8B ptr -> Heap',
-            changed: changedStackSet.has('buffer'),
-          },
-          {
-            name: 'bytes_read',
-            type: 'ssize_t',
-            address: '0x7fffffffde28',
-            value: stackBytesVal,
-            note: 'signed return',
-            changed: changedStackSet.has('bytes_read'),
-          },
-          {
-            name: 'line',
-            type: 'char *',
-            address: '0x7fffffffde20',
-            value: stackLineVal,
-            note: 'return ptr -> Heap',
-            changed: changedStackSet.has('line'),
-          },
+          { name: 'fd', type: 'int', address: '0x7fffffffde3c', value: stackFdVal, note: 'target descriptor', changed: changedStackSet.has('fd') },
+          { name: 'buffer', type: 'char *', address: '0x7fffffffde30', value: stackBufVal, note: '8B ptr -> Heap', changed: changedStackSet.has('buffer') },
+          { name: 'bytes_read', type: 'ssize_t', address: '0x7fffffffde28', value: stackBytesVal, note: 'signed count / -1', changed: changedStackSet.has('bytes_read') },
+          { name: 'line', type: 'char *', address: '0x7fffffffde20', value: stackLineVal, note: 'result ptr -> Heap', changed: changedStackSet.has('line') },
         ]
       : [];
 
@@ -470,109 +412,94 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       .filter((b) => b.status === 'returned_to_caller')
       .reduce((acc, b) => acc + b.size, 0);
 
-    const cpu: CpuState = {
-      ring: p.ring,
-      registers,
-      activeInstruction: p.activeInstruction,
-      dataBusTransfer: p.dataBusTransfer ?? null,
-      errnoValue: p.errnoValue ?? null,
-    };
-
-    const memory: MemoryState = {
-      stackActive,
-      stackFrameLabel,
-      stackSlots,
-      heapBlocks: cloneHeapBlocks(heapBlocks, p.highlightHeapId ?? null),
-      bssSlots: buildBssSlots(p.changedBssKey ?? null),
-      textImmediateHighlight: p.textImmediateHighlight ?? false,
-      bufferSize,
-    };
-
-    const kernel: KernelState = {
-      activeSyscallIndex: p.activeSyscallIndex ?? null,
-      fdTable: buildFdTable(p.lookupFd ?? null),
-      openFiles: buildOpenFileSnapshots(
-        p.activeSliceFd ?? null,
-        p.activeSliceStart ?? null,
-        p.activeSliceLen ?? 0
-      ),
-      lookupFd: p.lookupFd ?? null,
-      lookupStatus: p.lookupStatus ?? 'idle',
-      accessOkCheck: p.accessOkCheck ?? {
-        status: 'idle',
-        address: '—',
-        count: 0,
-        limit: TASK_SIZE_MAX,
-      },
-      kernelErrno: p.kernelErrno ?? null,
-    };
-
-    const metrics: MetricsState = {
-      syscallCount,
-      pageCacheHits,
-      ssdPageFetches,
-      bytesCopiedToUser,
-      mallocCount,
-      freeCount,
-      liveGnlHeapBytes,
-      callerOwnedBytes,
-      gnlLeakBytes: liveGnlHeapBytes,
-      returnedLines: returnedLines.map((r) => ({ ...r })),
-    };
-
     steps.push({
       id: steps.length,
       callIndex: p.callIndex,
       activeFd: p.activeFd,
+      stageIndex: p.stageIndex,
       isMacro: p.isMacro,
       phase: p.phase,
       title: p.title,
       explanation: p.explanation,
       evalTip: p.evalTip,
-      cLine: p.cLine,
-      asmSection: p.asmSection,
-      asmLine: p.asmLine,
       isSyscallMarker: p.isSyscallMarker ?? false,
       isReturnMarker: p.isReturnMarker ?? false,
-      cpu,
-      memory,
-      kernel,
-      metrics,
+      cpu: {
+        ring: p.ring,
+        registers,
+        activeInstruction: p.activeInstruction,
+        dataBusTransfer: p.dataBusTransfer ?? null,
+        errnoValue: p.errnoValue ?? null,
+      },
+      memory: {
+        stackActive,
+        stackFrameLabel,
+        stackSlots,
+        heapBlocks: cloneHeapBlocks(heapBlocks, p.highlightHeapId ?? null),
+        bssSlots: buildBssSlots(p.changedBssKey ?? null),
+        textImmediateHighlight: p.textImmediateHighlight ?? false,
+        bufferSize,
+      },
+      kernel: {
+        activeSyscallIndex: p.activeSyscallIndex ?? null,
+        fdTable: buildFdTable(p.lookupFd ?? null),
+        openFiles: buildOpenFileSnapshots(
+          p.activeSliceFd ?? null,
+          p.activeSliceStart ?? null,
+          p.activeSliceLen ?? 0
+        ),
+        lookupFd: p.lookupFd ?? null,
+        lookupStatus: p.lookupStatus ?? 'idle',
+        accessOkCheck: p.accessOkCheck ?? {
+          status: 'idle',
+          address: '—',
+          count: 0,
+          limit: TASK_SIZE_MAX,
+        },
+        kernelErrno: p.kernelErrno ?? null,
+      },
+      metrics: {
+        syscallCount,
+        pageCacheHits,
+        ssdPageFetches,
+        bytesCopiedToUser,
+        mallocCount,
+        freeCount,
+        liveGnlHeapBytes,
+        callerOwnedBytes,
+        gnlLeakBytes: liveGnlHeapBytes,
+        returnedLines: returnedLines.map((r) => ({ ...r })),
+      },
     });
 
     return true;
   };
 
-  // Initial Step 0: ELF binary loaded, before first get_next_line call
+  // Step 0: Initial Machine State
   emit({
     callIndex: 0,
     activeFd: config.callSequence[0] ?? config.files[0]?.fd ?? 3,
+    stageIndex: 0,
     isMacro: true,
     phase: 'program_start',
-    title: `Process loaded — BUFFER_SIZE=${bufferSize} baked in .text, .bss zero-initialized`,
-    explanation: `Before get_next_line() is called: the preprocessor already substituted BUFFER_SIZE (${bufferSize}) as an immediate integer inside .text machine instructions (0 bytes of data RAM). The OS ELF loader zero-initialized the static pointer in .bss to NULL and populated the kernel fdtable for open file(s).`,
+    title: `Initial State: BUFFER_SIZE (${bufferSize}) lives in CPU instructions; .bss pointer is NULL`,
+    explanation: `Before any call starts: \`BUFFER_SIZE\` (${bufferSize}) is just a compile-time constant baked into the binary's \`.text\` instructions (0 bytes of runtime data RAM). The OS zero-initialized the \`static\` pointer in \`.bss\` to \`NULL\`, and the Linux Kernel already tracks your open file(s) at offset \`f_pos = 0\`.`,
     evalTip: {
       conceptTag: 'BUFFER_SIZE vs buffer',
-      question: 'Does BUFFER_SIZE occupy memory in RAM at runtime?',
+      question: 'Does `BUFFER_SIZE` reserve any RAM before runtime?',
       answer:
-        'No. BUFFER_SIZE is a compile-time preprocessor constant baked into CPU instructions in .text (e.g. `mov edx, 0x4`). Only `buffer` (from `malloc(BUFFER_SIZE + 1)`) allocates physical Heap RAM.',
+        'No. `BUFFER_SIZE` is a preprocessor number baked directly into CPU instructions (`.text`). Only `buffer` (allocated on the Heap for `BUFFER_SIZE + 1` bytes) is a real physical container in RAM.',
     },
-    cLine: 3,
-    asmSection: 'gnl_text',
-    asmLine: 1,
     ring: 3,
-    activeInstruction: 'ELF entry -> main()',
+    activeInstruction: 'Process loaded in Ring 3 (User Mode)',
     textImmediateHighlight: true,
   });
 
-  // Determine sequence of get_next_line(fd) calls to simulate
   const plannedCalls: number[] = [];
   if (config.callSequence.length > 0) {
     plannedCalls.push(...config.callSequence);
   } else {
-    const primaryFd = config.files[0]?.fd ?? 3;
-    // Dynamically keep calling until NULL (handled in loop below)
-    plannedCalls.push(primaryFd);
+    plannedCalls.push(config.files[0]?.fd ?? 3);
   }
 
   const dynamicUntilNull = config.callSequence.length === 0;
@@ -587,16 +514,16 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
     callIndex += 1;
     let syscallsInThisCall = 0;
 
-    // 1. Enter get_next_line(fd)
+    // Call Entry (Stage 1)
     stackActive = true;
-    stackFrameLabel = `get_next_line(fd=${fd}) [Call #${callIndex}]`;
+    stackFrameLabel = `Call #${callIndex} (fd=${fd})`;
     stackFdVal = `${fd}`;
-    stackBufVal = '<uninit>';
-    stackBytesVal = '<uninit>';
-    stackLineVal = '<uninit>';
+    stackBufVal = '<empty>';
+    stackBytesVal = '<empty>';
+    stackLineVal = '<empty>';
     regState.rdi = { hex: toSignedHex64(fd), meaning: `fd = ${fd}`, role: 'arg' };
-    regState.rip = { hex: '0x0000000000401120', meaning: 'get_next_line() prologue', role: 'control' };
-    regState.rsp = { hex: USER_RSP, meaning: 'GNL Stack Frame', role: 'control' };
+    regState.rip = { hex: '0x0000000000401120', meaning: 'User Space call entry', role: 'control' };
+    regState.rsp = { hex: USER_RSP, meaning: 'Active Stack Frame', role: 'control' };
 
     const stashKey = getStashKey(fd);
     if (!stashMap.has(stashKey) && fd >= 0) {
@@ -608,24 +535,22 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       !emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 1,
         isMacro: true,
         phase: 'user_c',
-        title: `Call #${callIndex}: get_next_line(fd=${fd}) — Stack frame created`,
+        title: `Call #${callIndex} begins for fd=${fd} — Temporary Stack frame opens`,
         explanation:
           existingStash !== null
-            ? `New Stack frame pushed for Call #${callIndex}. Local variables are uninitialized, but the static pointer in .bss survived from the previous call and still points to ${formatPreviewString(existingStash)} on the Heap.`
-            : `New Stack frame pushed for Call #${callIndex} in Ring 3 (User Mode). The static pointer in .bss is currently NULL.`,
+            ? `A fresh temporary Stack frame is created in Ring 3. Notice that while previous local variables vanished, the \`static\` pointer in \`.bss\` survived and still points to leftover bytes ${formatPreviewString(existingStash)} on the Heap.`
+            : `A fresh temporary Stack frame is created in Ring 3 (User Mode). The \`static\` pointer in \`.bss\` is currently \`NULL\`.`,
         evalTip: {
           conceptTag: 'Stack vs .bss Lifetime',
-          question: 'Why does `stash` survive across calls while `buffer` and `bytes_read` disappear?',
+          question: 'Why does the leftover pointer survive across calls while local variables vanish?',
           answer:
-            '`buffer` and `bytes_read` live on the Stack frame, which is popped on `ret`. `static char *stash` lives in the `.bss` segment for the entire process lifetime.',
+            'Local variables live on the Stack frame, which is destroyed when the call returns. A `static` pointer lives in `.bss` for the entire lifetime of the process.',
         },
-        cLine: 1,
-        asmSection: 'gnl_text',
-        asmLine: 1,
         ring: 3,
-        activeInstruction: `call get_next_line(${fd})`,
+        activeInstruction: `Enter get_next_line(fd=${fd})`,
         changedRegs: ['rdi', 'rip', 'rsp'],
         changedStack: ['fd', 'buffer', 'bytes_read', 'line'],
       })
@@ -633,93 +558,74 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       break;
     }
 
-    // 2. Guard check
+    // Input Guard
     if (fd < 0 || bufferSize <= 0 || (mode === 'bonus' && fd >= 1024)) {
       stackActive = false;
-      stackFrameLabel = 'main()';
-      regState.rax = { hex: toHex64(0n), meaning: 'NULL (guard failed)', role: 'return' };
-      returnedLines.push({
-        callIndex,
-        fd,
-        address: null,
-        value: null,
-        byteLength: 0,
-        syscallsInCall: 0,
-      });
+      stackFrameLabel = 'Caller (idle)';
+      regState.rax = { hex: toHex64(0n), meaning: 'NULL (invalid input)', role: 'return' };
+      returnedLines.push({ callIndex, fd, address: null, value: null, byteLength: 0, syscallsInCall: 0 });
       emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 8,
         isMacro: true,
         phase: 'return',
-        title: `Guard failed (fd=${fd}, BUFFER_SIZE=${bufferSize}) — returns NULL immediately`,
+        title: `Invalid input (fd=${fd}, BUFFER_SIZE=${bufferSize}) — returns NULL immediately`,
         explanation:
-          'Defensive check rejects invalid fd or non-positive BUFFER_SIZE before touching malloc() or issuing any syscall.',
+          'Before allocating any Heap RAM or trapping into the Kernel, invalid descriptors or non-positive buffer capacities return `NULL` cleanly.',
         evalTip: {
-          conceptTag: 'Defensive Guard',
-          question: 'What if someone compiles with -D BUFFER_SIZE=0 or calls get_next_line(-1)?',
+          conceptTag: 'Boundary Validation',
+          question: 'What happens if `BUFFER_SIZE <= 0` or `fd < 0`?',
           answer:
-            'Checking `fd < 0 || BUFFER_SIZE <= 0` up front prevents invalid `malloc` sizes and avoids wasting a syscall.',
+            'Rejecting invalid inputs up front avoids allocating invalid Heap sizes and prevents unnecessary syscalls.',
         },
-        cLine: 9,
-        asmSection: 'gnl_text',
-        asmLine: null,
         isReturnMarker: true,
         ring: 3,
-        activeInstruction: 'xor eax, eax; ret',
+        activeInstruction: 'Return NULL (0 syscalls, 0 allocations)',
         changedRegs: ['rax'],
       });
       if (dynamicUntilNull) break;
       continue;
     }
 
-    // 3. malloc(BUFFER_SIZE + 1)
+    // Stage 1: Allocate Heap buffer (BUFFER_SIZE + 1)
     const bufBlock = allocHeap(
       bufferSize + 1,
-      `buffer (BUFFER_SIZE+1 = ${bufferSize + 1} B)`,
+      `temp buffer (${bufferSize} data + 1 '\\0')`,
       'buffer',
       fd
     );
     stackBufVal = bufBlock.address;
-    stackBytesVal = '1';
-    regState.rdi = {
-      hex: toHex64(BigInt(bufferSize + 1)),
-      meaning: `BUFFER_SIZE + 1 (${bufferSize + 1})`,
-      role: 'arg',
-    };
-    regState.rax = {
-      hex: toHex64(bufBlock.rawAddr),
-      meaning: `malloc() -> ${bufBlock.address}`,
-      role: 'return',
-    };
-    regState.rip = { hex: '0x000000000040114d', meaning: 'malloc(BUFFER_SIZE + 1)', role: 'control' };
+    stackBytesVal = 'ready';
+    regState.rdi = { hex: toHex64(BigInt(bufferSize + 1)), meaning: `size = ${bufferSize + 1} B`, role: 'arg' };
+    regState.rax = { hex: toHex64(bufBlock.rawAddr), meaning: `Heap addr ${bufBlock.address}`, role: 'return' };
+    regState.rip = { hex: '0x000000000040114d', meaning: 'Heap allocation complete', role: 'control' };
 
     if (
       !emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 1,
         isMacro: true,
         phase: 'user_heap',
-        title: `Heap allocation: buffer = malloc(${bufferSize + 1}) -> ${bufBlock.address}`,
-        explanation: `The CPU reads immediate ${bufferSize + 1} from .text and allocates a contiguous ${bufferSize + 1}-byte container on the Heap (${bufferSize} bytes for raw kernel data + 1 extra byte for '\\0'). Stack local \`buffer\` stores its 8-byte base address.`,
+        title: `Stage 1 — Allocate physical Heap container: ${bufferSize + 1} bytes at ${bufBlock.address}`,
+        explanation: `Using the compile-time number \`BUFFER_SIZE\` (${bufferSize}) from \`.text\`, we reserve a real contiguous ${bufferSize + 1}-byte container on the Heap: ${bufferSize} slots for raw bytes from the Kernel, plus **1 extra slot** reserved for the null terminator \`'\\0'\`.`,
         evalTip: {
-          conceptTag: 'Heap & +1 Null Byte',
-          question: 'Why malloc(BUFFER_SIZE + 1) on the Heap instead of char buffer[BUFFER_SIZE + 1] on the Stack?',
+          conceptTag: 'Why +1 & Why Heap?',
+          question: 'Why reserve `BUFFER_SIZE + 1` bytes on the Heap instead of on the Stack?',
           answer:
-            'Two reasons: (1) `read()` never adds `\\0`, so the +1 byte prevents a 1-byte overflow; (2) huge `-D BUFFER_SIZE=10000000` overflows the 8 MB Linux Stack (SIGSEGV), whereas Heap `malloc()` handles it safely.',
+            '1) `read()` copies raw bytes and never writes `\\0`, so index `BUFFER_SIZE` needs +1 byte. 2) Huge `BUFFER_SIZE` (e.g. 10 MB) overflows the 8 MB Linux Stack (`SIGSEGV`), while the Heap handles it safely.',
         },
-        cLine: 10,
-        asmSection: 'gnl_text',
-        asmLine: 2,
         ring: 3,
-        activeInstruction: `mov edi, 0x${(bufferSize + 1).toString(16)}; call malloc`,
+        activeInstruction: `Reserve ${bufferSize + 1} B on Heap -> ${bufBlock.address}`,
         changedRegs: ['rdi', 'rax', 'rip'],
         changedStack: ['buffer', 'bytes_read'],
         highlightHeapId: bufBlock.id,
         textImmediateHighlight: true,
         dataBusTransfer: {
-          from: `.text immediate (${bufferSize + 1})`,
-          to: `Heap ${bufBlock.address}`,
-          label: `malloc(${bufferSize + 1} B)`,
+          from: `.text constant (${bufferSize} + 1)`,
+          to: `Heap RAM ${bufBlock.address}`,
+          label: `Allocate ${bufferSize + 1} B container`,
           kind: 'immediate',
         },
       })
@@ -727,7 +633,6 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       break;
     }
 
-    // 4. While loop: read until '\n' in stash or EOF (bytes_read == 0)
     let bytesRead = 1;
     let readError = false;
 
@@ -740,66 +645,54 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 7,
         isMacro: true,
         phase: 'user_c',
-        title: `Stash already contains '\\n' — skipping read() loop (0 syscalls!)`,
-        explanation: `ft_strchr(${mode === 'bonus' ? `stash[${fd}]` : 'stash'}, '\\n') found a newline already sitting in User Space Heap RAM from an earlier read(). No Ring 3 -> Ring 0 syscall is needed for Call #${callIndex}!`,
+        title: `Newline '\\n' already waiting in Heap stash — 0 syscalls needed!`,
+        explanation: `Scanning the leftover bytes already pointed to by \`.bss\` finds a \`'\\n'\` right here in User Space RAM. The Kernel is not disturbed at all — we skip the entire read/syscall loop and jump straight to releasing the temp buffer and slicing out the line!`,
         evalTip: {
           conceptTag: 'Zero-Syscall Reuse',
-          question: 'Why did Call #' + callIndex + ' perform 0 syscalls?',
+          question: 'Why did this call perform 0 syscalls?',
           answer:
-            'Because a previous read() fetched more than one line into `buffer` and saved the remainder in `.bss` `stash`. Scanning User-Space RAM is orders of magnitude faster than trapping into Ring 0.',
+            'An earlier `read()` already brought multiple lines into User Space RAM and kept the remainder via `.bss`. Scanning User RAM is orders of magnitude faster than switching to Ring 0.',
         },
-        cLine: 13,
-        asmSection: 'gnl_text',
-        asmLine: null,
         ring: 3,
-        activeInstruction: "ft_strchr(stash, '\\n') != NULL -> skip loop",
+        activeInstruction: "Found '\\n' in User-Space Heap -> skip Kernel read",
       });
     }
 
     while (!stashHasNewline() && bytesRead > 0 && !truncated) {
-      // Micro A: libc read() wrapper prepares x86-64 ABI registers
-      regState.rax = { hex: toHex64(0n), meaning: '__NR_read (syscall #0)', role: 'syscall_num' };
-      regState.rdi = { hex: toSignedHex64(fd), meaning: `arg1: fd = ${fd}`, role: 'arg' };
-      regState.rsi = {
-        hex: toHex64(bufBlock.rawAddr),
-        meaning: `arg2: buffer = ${bufBlock.address}`,
-        role: 'arg',
-      };
-      regState.rdx = {
-        hex: toHex64(BigInt(bufferSize)),
-        meaning: `arg3: BUFFER_SIZE = ${bufferSize}`,
-        role: 'arg',
-      };
-      regState.rip = { hex: LIBC_READ_ADDR, meaning: 'libc read() wrapper', role: 'control' };
+      // Stage 2: libc read() wrapper loads 4 CPU registers
+      regState.rax = { hex: toHex64(0n), meaning: 'Syscall #0 (read)', role: 'syscall_num' };
+      regState.rdi = { hex: toSignedHex64(fd), meaning: `Arg 1: fd = ${fd}`, role: 'arg' };
+      regState.rsi = { hex: toHex64(bufBlock.rawAddr), meaning: `Arg 2: buffer = ${bufBlock.address}`, role: 'arg' };
+      regState.rdx = { hex: toHex64(BigInt(bufferSize)), meaning: `Arg 3: max bytes = ${bufferSize}`, role: 'arg' };
+      regState.rip = { hex: LIBC_READ_ADDR, meaning: 'libc read() wrapper (Ring 3)', role: 'control' };
 
       if (
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 2,
           isMacro: false,
           phase: 'libc_prep',
-          title: `libc read() loads x86-64 syscall ABI registers (still Ring 3)`,
-          explanation: `read() is NOT the kernel — it is a tiny User-Space libc wrapper. Following the Linux x86-64 ABI, it loads rax=0 (__NR_read), rdi=${fd} (fd), rsi=${bufBlock.address} (Heap buffer), and rdx=${bufferSize} (immediate from .text).`,
+          title: `Stage 2 — libc read() wrapper loads 4 CPU registers (still in Ring 3)`,
+          explanation: `\`read()\` is NOT the Kernel — it is a tiny User-Space wrapper in \`libc\`. Following the x86-64 Linux ABI, it loads 4 CPU registers: \`rax = 0\` (syscall ID for read), \`rdi = ${fd}\` (fd), \`rsi = ${bufBlock.address}\` (Heap buffer address), and \`rdx = ${bufferSize}\` (\`BUFFER_SIZE\` capacity).`,
           evalTip: {
             conceptTag: 'x86-64 Syscall ABI',
-            question: 'Which 4 CPU registers pass arguments to Linux sys_read on x86-64?',
+            question: 'Which 4 CPU registers carry a `read()` request to the 64-bit Linux Kernel?',
             answer:
-              'rax = 0 (syscall number for read), rdi = fd, rsi = user buffer pointer, rdx = count (BUFFER_SIZE). The CPU is still in Ring 3 until the `syscall` instruction executes.',
+              '`rax = 0` (syscall number for read), `rdi = fd`, `rsi = buffer address in User RAM`, and `rdx = BUFFER_SIZE`. The CPU is still restricted in Ring 3.',
           },
-          cLine: 15,
-          asmSection: 'libc_read',
-          asmLine: 7,
           ring: 3,
-          activeInstruction: `mov eax, 0; mov edi, ${fd}; mov rsi, buf; mov edx, ${bufferSize}`,
+          activeInstruction: `Load ABI registers: rax=0, rdi=${fd}, rsi=${bufBlock.address}, rdx=${bufferSize}`,
           changedRegs: ['rax', 'rdi', 'rsi', 'rdx', 'rip'],
           highlightHeapId: bufBlock.id,
           textImmediateHighlight: true,
           dataBusTransfer: {
-            from: '.text immediate + Stack',
+            from: 'User Space (libc read wrapper)',
             to: 'CPU Registers (rax, rdi, rsi, rdx)',
-            label: `rax=0, rdi=${fd}, rdx=${bufferSize}`,
+            label: `ABI prep: #0, fd=${fd}, count=${bufferSize}`,
             kind: 'immediate',
           },
         })
@@ -807,46 +700,36 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // Micro B: CPU executes `syscall` instruction — Ring 3 -> Ring 0
+      // Stage 3: CPU hardware `syscall` — Ring 3 -> Ring 0
       syscallCount += 1;
       syscallsInThisCall += 1;
-      regState.rcx = {
-        hex: LIBC_AFTER_SYSCALL_ADDR,
-        meaning: 'HW-saved User rip (libc+7)',
-        role: 'saved',
-      };
-      regState.r11 = { hex: toHex64(0x246n), meaning: 'HW-saved User rflags', role: 'saved' };
-      regState.rip = {
-        hex: KERNEL_ENTRY_ADDR,
-        meaning: 'entry_SYSCALL_64 (MSR_LSTAR)',
-        role: 'control',
-      };
+      regState.rcx = { hex: LIBC_AFTER_SYSCALL_ADDR, meaning: 'Saved User rip (return point)', role: 'saved' };
+      regState.r11 = { hex: toHex64(0x246n), meaning: 'Saved User CPU flags', role: 'saved' };
+      regState.rip = { hex: KERNEL_ENTRY_ADDR, meaning: 'Linux Kernel Entry (Ring 0)', role: 'control' };
       regState.rsp = { hex: KERNEL_RSP, meaning: 'Kernel Stack ptr', role: 'control' };
 
       if (
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 3,
           isMacro: false,
           phase: 'cpu_syscall',
-          title: `CPU executes SYSCALL #${syscallCount}: hardware switch Ring 3 -> Ring 0`,
-          explanation: `In one atomic hardware operation, the CPU saves User rip (${LIBC_AFTER_SYSCALL_ADDR}) into rcx, saves rflags into r11, elevates privilege from Ring 3 (User Mode) to Ring 0 (Kernel Mode), and jumps rip to protected Kernel entry_SYSCALL_64.`,
+          title: `Stage 3 — Hardware SYSCALL #${syscallCount}: CPU switches Ring 3 -> Ring 0`,
+          explanation: `CPU circuits execute the hardware \`syscall\` instruction atomically: (1) save the next User-Space instruction address (\`rip\`) into \`rcx\` so it remembers where to resume, (2) elevate security privilege from **Ring 3 (User Mode)** to **Ring 0 (Kernel Mode)**, and (3) jump straight into the protected Linux Kernel entry point.`,
           evalTip: {
-            conceptTag: 'Privilege Ring Transition',
-            question: 'What happens inside the CPU chip at the exact moment `syscall` executes?',
+            conceptTag: 'Hardware Ring Transition',
+            question: 'What 3 atomic actions happen inside the CPU chip when `syscall` executes?',
             answer:
-              '1) Saves next user `rip` into `rcx` (and `rflags` into `r11`). 2) Switches hardware CPL from Ring 3 to Ring 0. 3) Jumps `rip` to `MSR_LSTAR` (`entry_SYSCALL_64`) in Kernel Space.',
+              '1) Saves User `rip` into `rcx` (and flags into `r11`). 2) Switches hardware privilege from Ring 3 to Ring 0. 3) Jumps `rip` to the protected Kernel entry address (`MSR_LSTAR`).',
           },
-          cLine: 15,
-          asmSection: 'libc_read',
-          asmLine: 8,
           isSyscallMarker: true,
           ring: 0,
-          activeInstruction: 'syscall  ; Ring 3 -> Ring 0',
+          activeInstruction: 'Hardware SYSCALL :: Ring 3 (User) -> Ring 0 (Kernel)',
           changedRegs: ['rcx', 'r11', 'rip', 'rsp'],
           dataBusTransfer: {
-            from: 'Ring 3 (libc read)',
-            to: 'Ring 0 (entry_SYSCALL_64)',
+            from: 'Ring 3 (User Mode)',
+            to: 'Ring 0 (Linux Kernel Entry)',
             label: 'SYSCALL TRAP (CPL 3 -> 0)',
             kind: 'trap',
           },
@@ -855,31 +738,25 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // Micro C: Kernel dispatches sys_call_table[rax]
-      regState.rip = {
-        hex: KERNEL_SYS_READ_ADDR,
-        meaning: '__x64_sys_read (table[0])',
-        role: 'control',
-      };
+      // Stage 4a: sys_call_table dispatch
+      regState.rip = { hex: KERNEL_SYS_READ_ADDR, meaning: 'Kernel sys_read (table[0])', role: 'control' };
       if (
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 4,
           isMacro: false,
           phase: 'kernel_dispatch',
-          title: `Kernel indexes sys_call_table[rax=0] -> __x64_sys_read()`,
-          explanation: `Now executing in Ring 0, the Linux Kernel reads rax (0) and uses it as an array index into sys_call_table (an array of kernel function pointers), invoking __x64_sys_read(rdi=${fd}, rsi=${bufBlock.address}, rdx=${bufferSize}).`,
+          title: `Stage 4 — Kernel looks up sys_call_table[rax=0] -> calls sys_read`,
+          explanation: `Now running in Ring 0 with full hardware access, the Kernel reads \`rax\` (\`0\`) and uses it as an array index into \`sys_call_table\` (a Kernel table of function pointers). Index \`0\` resolves to the real Kernel read handler: \`sys_read\`.`,
           evalTip: {
             conceptTag: 'sys_call_table',
-            question: 'How does the Linux Kernel know which function to run after `syscall`?',
+            question: 'How does the Kernel map `rax = 0` to `sys_read`?',
             answer:
-              'It uses the syscall number in `rax` (0 for read, 1 for write, 2 for open, 3 for close) to index `sys_call_table[rax]` and call the matching kernel handler (`__x64_sys_read`).',
+              'The Kernel maintains an array of function pointers called `sys_call_table`. It indexes `sys_call_table[rax]` — slot `0` points directly to `sys_read`.',
           },
-          cLine: 15,
-          asmSection: 'kernel_entry',
-          asmLine: 12,
           ring: 0,
-          activeInstruction: 'call *sys_call_table(,%rax,8)  ; [0] -> sys_read',
+          activeInstruction: 'Dispatch sys_call_table[0] -> sys_read',
           changedRegs: ['rip'],
           activeSyscallIndex: 0,
         })
@@ -887,43 +764,36 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // Micro D: Kernel validates fd in fdtable & buffer pointer via access_ok()
+      // Stage 4b: Validate fd in fdtable & buffer pointer via access_ok
       const fileDesc = openFiles.get(fd);
       if (!fileDesc) {
-        // -EBADF error path
-        regState.rax = {
-          hex: toSignedHex64(-9),
-          meaning: '-9 (-EBADF: Bad file descriptor)',
-          role: 'return',
-        };
+        regState.rax = { hex: toSignedHex64(-9), meaning: '-9 (-EBADF: closed/bad fd)', role: 'return' };
         if (
           !emit({
             callIndex,
             activeFd: fd,
+            stageIndex: 4,
             isMacro: false,
             phase: 'kernel_validate',
-            title: `Kernel fdget(${fd}) FAILED -> -EBADF (-9) written to rax`,
-            explanation: `sys_read looks up fd=${fd} in the process fdtable and finds NULL (closed or never opened). It aborts I/O immediately and places -9 (-EBADF) in rax to signal failure back to User Space.`,
+            title: `Stage 4 — Validation FAILED: fd=${fd} is not open -> Kernel sets rax = -9 (-EBADF)`,
+            explanation: `\`sys_read\` checks \`rdi\` (\`fd=${fd}\`) in the process's Open File Table and finds \`NULL\` (closed or never opened). It refuses to read and writes error code \`-9\` (\`-EBADF\`) into \`rax\`.`,
             evalTip: {
-              conceptTag: 'Kernel Validation (-EBADF)',
-              question: 'What does sys_read actually return in `rax` on a bad file descriptor?',
+              conceptTag: 'Kernel Error (-EBADF)',
+              question: 'What does `sys_read` return in `rax` on a closed file descriptor?',
               answer:
-                'The Linux Kernel returns a negative error code (`-EBADF` = `-9`) in `rax`. The `libc` wrapper later detects `rax` in `[-4095, -1]`, stores `9` into `errno`, and returns `-1` to C code.',
+                'The Kernel puts negative error code `-9` (`-EBADF`) in `rax`. Back in Ring 3, `libc` translates negative kernel errors into return value `-1` and stores `9` in `errno`.',
             },
-            cLine: 15,
-            asmSection: 'kernel_entry',
-            asmLine: 13,
             ring: 0,
-            activeInstruction: `fdget(${fd}) == NULL -> mov rax, -9`,
+            activeInstruction: `fdtable[${fd}] == NULL -> error -EBADF (-9)`,
             changedRegs: ['rax'],
             activeSyscallIndex: 0,
             lookupFd: fd,
             lookupStatus: 'ebadf',
             kernelErrno: -9,
             dataBusTransfer: {
-              from: `fdtable[${fd}] (NULL)`,
+              from: `Open File Table fd[${fd}] (NULL)`,
               to: 'rax = -9 (-EBADF)',
-              label: 'Invalid FD error',
+              label: 'Bad File Descriptor',
               kind: 'error',
             },
           })
@@ -931,12 +801,8 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
           break;
         }
 
-        // sysret back with error
-        regState.rip = {
-          hex: LIBC_AFTER_SYSCALL_ADDR,
-          meaning: 'libc read() post-syscall',
-          role: 'control',
-        };
+        // Stage 6: sysret with error
+        regState.rip = { hex: LIBC_AFTER_SYSCALL_ADDR, meaning: 'Resumed in libc (Ring 3)', role: 'control' };
         regState.rsp = { hex: USER_RSP, meaning: 'User Stack ptr', role: 'control' };
         bytesRead = -1;
         readError = true;
@@ -946,21 +812,19 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
           !emit({
             callIndex,
             activeFd: fd,
+            stageIndex: 6,
             isMacro: true,
             phase: 'cpu_sysret',
-            title: `SYSRET (Ring 0 -> Ring 3): libc converts rax=-9 into errno=EBADF & returns -1`,
-            explanation: `sysretq drops privilege back to Ring 3 and restores rip from rcx. The libc read() wrapper sees rax = -9 (-EBADF), sets thread-local errno = 9 (EBADF), and returns (ssize_t)-1 to get_next_line().`,
+            title: `Stage 6 — SYSRET (Ring 0 -> Ring 3): libc sees -EBADF, sets errno & returns -1`,
+            explanation: `\`sysret\` drops the CPU back to Ring 3 and restores \`rip\` from \`rcx\`. The \`libc\` wrapper sees \`rax = -9\`, sets \`errno = EBADF\`, and returns \`(ssize_t)-1\` to User Space.`,
             evalTip: {
-              conceptTag: 'ssize_t & errno',
-              question: 'Why must `bytes_read` be declared `ssize_t` instead of `size_t`?',
+              conceptTag: 'ssize_t vs size_t',
+              question: 'Why does `read()` return `ssize_t` instead of `size_t`?',
               answer:
-                '`size_t` is unsigned, so checking `bytes_read == -1` or `< 0` would never trigger (wrapping to SIZE_MAX). `ssize_t` is signed specifically to represent `-1` error, `0` EOF, and `> 0` byte count.',
+                '`ssize_t` is signed so it can distinguish `-1` (error), `0` (EOF), and `> 0` (bytes read). An unsigned `size_t` could never be `< 0`.',
             },
-            cLine: 16,
-            asmSection: 'libc_read',
-            asmLine: 9,
             ring: 3,
-            activeInstruction: 'sysretq -> errno=EBADF -> return -1',
+            activeInstruction: 'Hardware SYSRET -> errno=EBADF -> read() returns -1',
             changedRegs: ['rip', 'rsp'],
             changedStack: ['bytes_read'],
             errnoValue: 'EBADF (9)',
@@ -977,26 +841,23 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // Valid fd: show fdtable lookup + access_ok(rsi, rdx)
       if (
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 4,
           isMacro: false,
           phase: 'kernel_validate',
-          title: `Kernel validates fd=${fd} -> struct file (f_pos=${fileDesc.fPos}) & access_ok(buffer)`,
-          explanation: `sys_read resolves fdtable[${fd}] to Open File Description ${fileDesc.structFileAddr} (current offset f_pos=${fileDesc.fPos}) and verifies access_ok(${bufBlock.address}, ${bufferSize}) < TASK_SIZE_MAX so User Space cannot trick Ring 0 into overwriting Kernel RAM.`,
+          title: `Stage 4 — Kernel validates fd=${fd} (f_pos=${fileDesc.fPos}) & checks buffer lies in User Space`,
+          explanation: `\`sys_read\` confirms \`fd=${fd}\` is open in the Process File Table (resolving its Open File Description with current offset \`f_pos = ${fileDesc.fPos}\`) and verifies \`rsi\` (\`${bufBlock.address}\`) is a valid User-Space address — preventing a program from tricking Ring 0 into overwriting Kernel RAM.`,
           evalTip: {
-            conceptTag: 'access_ok() Security Check',
-            question: 'Why must the kernel validate the `buffer` pointer in `rsi` before writing bytes?',
+            conceptTag: 'Memory Safety (access_ok)',
+            question: 'Why must the Kernel verify the `buffer` pointer in `rsi` before copying bytes?',
             answer:
-              'Ring 0 can write to any RAM address. Without `access_ok()`, a program could pass a Kernel Space address in `rsi` and trick `sys_read` into overwriting Kernel memory.',
+              'Ring 0 has permission to write anywhere in RAM. Checking `rsi < TASK_SIZE_MAX` stops a buggy or malicious User-Space process from making the Kernel overwrite itself.',
           },
-          cLine: 15,
-          asmSection: 'kernel_entry',
-          asmLine: 13,
           ring: 0,
-          activeInstruction: `fdget(${fd}) OK; access_ok(${bufBlock.address}, ${bufferSize}) PASS`,
+          activeInstruction: `Verify fd[${fd}] -> struct file (f_pos=${fileDesc.fPos}) & User-Space ptr OK`,
           activeSyscallIndex: 0,
           lookupFd: fd,
           lookupStatus: 'valid',
@@ -1011,7 +872,7 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // Micro E (also Macro step!): Page Cache / SSD fetch + copy_to_user() + f_pos advance
+      // Stage 5: SSD / Page Cache -> User Heap copy + f_pos advance + rax = bytes_read
       const remaining = fileDesc.content.length - fileDesc.fPos;
       const toCopy = Math.min(bufferSize, Math.max(0, remaining));
       const sliceStart = fileDesc.fPos;
@@ -1026,9 +887,9 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       if (toCopy === 0) {
         cacheEvent = 'eof';
         fileDesc.lastCacheEvent = 'eof';
-        regState.rax = { hex: toHex64(0n), meaning: '0 bytes (EOF reached)', role: 'return' };
-        ioTitle = `Kernel read(): f_pos (${fileDesc.fPos}) == file size (${fileDesc.content.length}) -> EOF (rax = 0)`;
-        ioExplanation = `Open File Description ${fileDesc.structFileAddr} has reached End-Of-File. Zero bytes are copied to User Heap, f_pos stays at ${fileDesc.fPos}, and rax is set to 0.`;
+        regState.rax = { hex: toHex64(0n), meaning: '0 bytes (EOF)', role: 'return' };
+        ioTitle = `Stage 5 — End-of-File reached (f_pos = ${fileDesc.fPos}): 0 bytes copied, rax = 0`;
+        ioExplanation = `The file's offset \`f_pos\` (${fileDesc.fPos}) has reached the end of the file (${fileDesc.content.length} B). Zero bytes are copied to User Heap, \`f_pos\` stays unchanged, and the Kernel places \`0\` in \`rax\`.`;
         transferLabel = 'EOF -> rax = 0';
       } else {
         const pageIdx = Math.floor(sliceStart / 4096);
@@ -1038,16 +899,15 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
           ssdPageFetches += 1;
           cacheEvent = 'miss_ssd_fetch';
           transferKind = 'dma_disk';
-          transferLabel = `SSD 4KB Page #${pageIdx} -> Page Cache -> copy_to_user(${toCopy} B)`;
+          transferLabel = `SSD 4KB Page #${pageIdx} -> Page Cache -> User Heap (${toCopy} B)`;
         } else {
           pageCacheHits += 1;
           cacheEvent = 'hit_page_cache';
           transferKind = 'copy_to_user';
-          transferLabel = `Page Cache HIT -> copy_to_user(${toCopy} B) -> ${bufBlock.address}`;
+          transferLabel = `Page Cache HIT -> copy ${toCopy} B to Heap ${bufBlock.address}`;
         }
         fileDesc.lastCacheEvent = cacheEvent;
 
-        // Populate buffer bytes in Heap (leaving index toCopy untouched until C adds '\0'!)
         for (let i = 0; i < Math.min(toCopy, MAX_DISPLAY_BYTES); i++) {
           const code = chunk.charCodeAt(i);
           bufBlock.bytes[i] = {
@@ -1061,26 +921,23 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         bufBlock.rawText = chunk;
         fileDesc.fPos += toCopy;
         bytesCopiedToUser += toCopy;
-        regState.rax = {
-          hex: toHex64(BigInt(toCopy)),
-          meaning: `${toCopy} byte(s) copied`,
-          role: 'return',
-        };
+        regState.rax = { hex: toHex64(BigInt(toCopy)), meaning: `${toCopy} byte(s) copied`, role: 'return' };
 
         ioTitle =
           cacheEvent === 'miss_ssd_fetch'
-            ? `SSD -> Page Cache (4KB miss) -> copy_to_user(${toCopy} B); f_pos: ${sliceStart} -> ${fileDesc.fPos}`
-            : `Page Cache HIT -> copy_to_user(${toCopy} B) to Heap; f_pos: ${sliceStart} -> ${fileDesc.fPos}`;
+            ? `Stage 5 — SSD -> Page Cache (4KB load) -> copy ${toCopy} B into User Heap; f_pos: ${sliceStart} -> ${fileDesc.fPos}`
+            : `Stage 5 — Page Cache HIT -> copy ${toCopy} B into User Heap; f_pos: ${sliceStart} -> ${fileDesc.fPos}`;
         ioExplanation =
           cacheEvent === 'miss_ssd_fetch'
-            ? `Page #${pageIdx} was not yet in Kernel Page Cache RAM, so the kernel fetched a 4 KB page from SSD into Page Cache, copied ${toCopy} raw byte(s) (${formatPreviewString(chunk)}) into User Heap ${bufBlock.address} (without '\\0'), advanced f_pos to ${fileDesc.fPos}, and set rax = ${toCopy}.`
-            : `Page #${pageIdx} is already hot in Kernel Page Cache RAM (no SSD I/O!). Kernel copies ${toCopy} raw byte(s) (${formatPreviewString(chunk)}) directly into User Heap ${bufBlock.address}, advances f_pos to ${fileDesc.fPos}, and sets rax = ${toCopy}.`;
+            ? `First access to 4 KB page #${pageIdx}: the Kernel loads it from **SSD** into **Kernel Page Cache RAM**, copies ${toCopy} raw byte(s) (${formatPreviewString(chunk)}) into User Heap \`${bufBlock.address}\` (notice NO \`'\\0'\` is added!), advances \`f_pos\` to \`${fileDesc.fPos}\`, and writes \`${toCopy}\` into \`rax\`.`
+            : `4 KB page #${pageIdx} is already hot in **Kernel Page Cache RAM** (no slow SSD hit!). The Kernel copies ${toCopy} raw byte(s) (${formatPreviewString(chunk)}) directly into User Heap \`${bufBlock.address}\`, advances \`f_pos\` to \`${fileDesc.fPos}\`, and writes \`${toCopy}\` into \`rax\`.`;
       }
 
       if (
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 5,
           isMacro: true,
           phase: 'kernel_io',
           title: ioTitle,
@@ -1088,26 +945,22 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
           evalTip:
             cacheEvent === 'miss_ssd_fetch'
               ? {
-                  conceptTag: 'Page Cache vs SSD',
-                  question: 'Why did the first read fetch from SSD while subsequent reads hit Page Cache?',
+                  conceptTag: 'SSD vs Page Cache',
+                  question: 'Does every `read()` syscall physically read from the SSD?',
                   answer:
-                    'Linux caches 4 KB file pages in Kernel Space RAM (Page Cache). Once loaded, later `read()` syscalls avoid slow disk I/O — though they still pay Ring 3 <-> Ring 0 syscall overhead.',
+                    'No. The first read fetches a 4 KB page from SSD into Kernel Page Cache RAM. Later reads within that page hit RAM directly — though each `read()` still pays Ring 3 <-> 0 syscall cost.',
                 }
               : {
-                  conceptTag: 'File Offset (f_pos)',
-                  question: 'How does the next read() know not to re-read the same bytes?',
+                  conceptTag: 'Kernel File Offset (f_pos)',
+                  question: 'How does the next `read()` know where to continue?',
                   answer:
-                    'The kernel atomically updates `struct file -> f_pos += bytes_read` inside Kernel Space. That offset belongs to the Open File Description, completely independent of User Space variables.',
+                    'The Kernel increments `f_pos` inside the Open File Description (`struct file`). That offset lives in Kernel Space and advances automatically after every read.',
                 },
-          cLine: 15,
-          asmSection: 'kernel_entry',
-          asmLine: 13,
-          isSyscallMarker: false,
           ring: 0,
           activeInstruction:
             toCopy > 0
-              ? `copy_to_user(${bufBlock.address}, page_cache+${sliceStart}, ${toCopy}); f_pos=${fileDesc.fPos}`
-              : 'EOF: mov rax, 0',
+              ? `Copy ${toCopy} B -> User Heap ${bufBlock.address}; f_pos=${fileDesc.fPos}; rax=${toCopy}`
+              : 'EOF -> rax = 0',
           changedRegs: ['rax'],
           highlightHeapId: bufBlock.id,
           activeSyscallIndex: 0,
@@ -1123,7 +976,7 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
           activeSliceStart: sliceStart,
           activeSliceLen: toCopy,
           dataBusTransfer: {
-            from: cacheEvent === 'miss_ssd_fetch' ? 'SSD -> Kernel Page Cache' : 'Kernel Page Cache',
+            from: cacheEvent === 'miss_ssd_fetch' ? 'SSD -> Kernel Page Cache' : 'Kernel Page Cache (RAM)',
             to: toCopy > 0 ? `User Heap ${bufBlock.address}` : 'rax = 0 (EOF)',
             label: transferLabel,
             kind: transferKind,
@@ -1133,17 +986,12 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // Micro F: sysretq — Ring 0 -> Ring 3, libc returns ssize_t
+      // Stage 6: Hardware SYSRET — Ring 0 -> Ring 3
       bytesRead = toCopy;
       stackBytesVal = `${bytesRead}`;
-      regState.rip = {
-        hex: LIBC_AFTER_SYSCALL_ADDR,
-        meaning: 'libc read() -> return to GNL',
-        role: 'control',
-      };
+      regState.rip = { hex: LIBC_AFTER_SYSCALL_ADDR, meaning: 'Restored User rip (libc)', role: 'control' };
       regState.rsp = { hex: USER_RSP, meaning: 'User Stack ptr', role: 'control' };
 
-      // Downgrade newly_copied cells to normal data now that kernel copy is done
       bufBlock.bytes.forEach((cell) => {
         if (cell.role === 'newly_copied') cell.role = 'data';
       });
@@ -1152,26 +1000,24 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 6,
           isMacro: false,
           phase: 'cpu_sysret',
-          title: `SYSRET (Ring 0 -> Ring 3): read() returns bytes_read = ${bytesRead}`,
-          explanation: `The kernel executes sysretq: the CPU drops back to Ring 3 (User Mode) and restores User rip from rcx. libc read() reads rax (${bytesRead}) and returns it to get_next_line() as ssize_t. Your C code can now scan buffer in RAM at full speed with zero extra syscalls.`,
+          title: `Stage 6 — Hardware SYSRET (Ring 0 -> Ring 3): read() returns ${bytesRead}`,
+          explanation: `The Kernel executes \`sysret\`: the CPU switches back from **Ring 0** to **Ring 3 (User Mode)** and restores the saved User \`rip\` from \`rcx\`. \`libc\` reads \`rax\` (${bytesRead}) and returns it. Those bytes now sit directly in User Space RAM — inspectable at full speed with zero extra syscalls!`,
           evalTip: {
-            conceptTag: 'sysret & User-Space Speed',
-            question: 'What does `sysret` restore so execution resumes inside your program?',
+            conceptTag: 'SYSRET & User-Space Speed',
+            question: 'How does the CPU know where to resume in User Space after `sys_read` finishes?',
             answer:
-              '`sysretq` lowers CPL from Ring 0 back to Ring 3 and loads `rip <- rcx` (and `rflags <- r11`), landing right after the `syscall` instruction in `libc` with the return value in `rax`.',
+              '`sysret` lowers privilege back to Ring 3 and restores the User `rip` that `syscall` saved in `rcx`, landing right back inside `libc` with the result in `rax`.',
           },
-          cLine: 15,
-          asmSection: 'kernel_entry',
-          asmLine: 14,
           ring: 3,
-          activeInstruction: `sysretq  ; Ring 0 -> Ring 3, rax = ${bytesRead}`,
+          activeInstruction: `Hardware SYSRET :: Ring 0 -> Ring 3, bytes_read = ${bytesRead}`,
           changedRegs: ['rip', 'rsp'],
           changedStack: ['bytes_read'],
           highlightHeapId: bufBlock.id,
           dataBusTransfer: {
-            from: 'Ring 0 (sysretq)',
+            from: 'Ring 0 (sysret)',
             to: `Ring 3 (bytes_read = ${bytesRead})`,
             label: `SYSRET (CPL 0 -> 3, rax=${bytesRead})`,
             kind: 'return',
@@ -1181,12 +1027,9 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      if (bytesRead === 0) {
-        // EOF reached, break out of read loop cleanly
-        break;
-      }
+      if (bytesRead === 0) break;
 
-      // 5. buffer[bytes_read] = '\0'
+      // Stage 7a: Null-terminate buffer[bytes_read] = '\0'
       if (bytesRead < bufBlock.bytes.length) {
         bufBlock.bytes[bytesRead] = {
           index: bytesRead,
@@ -1196,27 +1039,25 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
           role: 'null',
         };
       }
-      regState.rip = { hex: '0x0000000000401188', meaning: "buffer[bytes_read] = '\\0'", role: 'control' };
+      regState.rip = { hex: '0x0000000000401188', meaning: 'User Space RAM write', role: 'control' };
 
       if (
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 7,
           isMacro: true,
           phase: 'user_heap',
-          title: `Null-terminate: buffer[${bytesRead}] = '\\0'`,
-          explanation: `Because read() copied raw bytes without terminating them, get_next_line explicitly writes 0x00 ('\\0') at index ${bytesRead} in Heap ${bufBlock.address}. This makes buffer a valid C string ready for ft_strjoin().`,
+          title: `Stage 7 — Write null terminator '\\0' at buffer[${bytesRead}]`,
+          explanation: `Because the Kernel only copied ${bytesRead} raw byte(s), User Space writes \`0x00\` (\`'\\0'\`) at index \`${bytesRead}\` inside Heap \`${bufBlock.address}\` (using that extra \`+1\` slot!). Now \`buffer\` is a valid null-terminated string.`,
           evalTip: {
-            conceptTag: 'Manual Null Termination',
-            question: 'What happens if you forget `buffer[bytes_read] = \'\\0\'` on the second read()?',
+            conceptTag: 'Why Manual \\0 Matters',
+            question: 'What goes wrong on a shorter second read if you forget to write `\\0` at index `bytes_read`?',
             answer:
-              'If read #1 returned 4 bytes ("Hell") and read #2 returned 2 bytes ("o\\n"), bytes [2..3] still hold stale "ll" (or uninitialized garbage on read #1), corrupting `ft_strjoin`!',
+              'If read #1 wrote 4 bytes ("Hell") and read #2 wrote 2 bytes ("o\\n"), indices [2..3] still hold stale bytes ("ll") from read #1 unless you terminate right at index 2!',
           },
-          cLine: 18,
-          asmSection: 'gnl_text',
-          asmLine: null,
           ring: 3,
-          activeInstruction: `mov BYTE PTR [buffer + ${bytesRead}], 0x0`,
+          activeInstruction: `Write 0x00 ('\\0') at Heap ${bufBlock.address}[${bytesRead}]`,
           changedRegs: ['rip'],
           highlightHeapId: bufBlock.id,
         })
@@ -1224,13 +1065,13 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         break;
       }
 
-      // 6. stash = ft_strjoin_free(stash, buffer)
+      // Stage 7b: Merge buffer into .bss static stash on Heap
       const prevStash = stashMap.get(stashKey) ?? { blockId: null, text: null };
       const joinedText = (prevStash.text ?? '') + chunk;
       const oldStashId = prevStash.blockId;
       const newStashBlock = allocHeap(
         joinedText.length + 1,
-        mode === 'bonus' ? `stash[${fd}] (joined)` : 'stash (joined)',
+        mode === 'bonus' ? `stash[${fd}] (accumulated)` : 'stash (accumulated)',
         'stash',
         fd,
         joinedText,
@@ -1243,23 +1084,21 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 7,
           isMacro: true,
           phase: 'user_heap',
-          title: `Join into .bss ${mode === 'bonus' ? `stash[${fd}]` : 'stash'} -> ${formatPreviewString(joinedText)}`,
+          title: `Stage 7 — Append buffer into Heap stash -> ${formatPreviewString(joinedText)}`,
           explanation: oldStashId
-            ? `ft_strjoin_free allocates a new ${joinedText.length + 1}-byte Heap block at ${newStashBlock.address}, copies old stash + buffer, frees the old stash block (preventing leaks!), and updates the .bss pointer.`
-            : `ft_strjoin_free allocates a ${joinedText.length + 1}-byte Heap block at ${newStashBlock.address} holding ${formatPreviewString(joinedText)} and stores its address in the .bss static pointer.`,
+            ? `Combines previous stash + new buffer into a fresh ${joinedText.length + 1}-byte Heap block at \`${newStashBlock.address}\`, frees the old Heap stash block (no leak!), and updates the \`.bss\` \`static\` pointer. Reading repeats ONLY if no \`'\\n'\` has appeared yet and EOF is not reached.`
+            : `Copies the bytes into a ${joinedText.length + 1}-byte Heap block at \`${newStashBlock.address}\` (${formatPreviewString(joinedText)}) and stores its address in the \`.bss\` \`static\` pointer. Reading repeats ONLY if no \`'\\n'\` has appeared yet.`,
           evalTip: {
-            conceptTag: 'Leak-Free Join',
-            question: 'Why must ft_strjoin free the previous `stash` pointer?',
+            conceptTag: 'Freeing Old Stash',
+            question: 'What happens if you replace the `.bss` static pointer without freeing the previous Heap stash?',
             answer:
-              'Overwriting `stash = ft_strjoin(stash, buffer)` without freeing the old Heap allocation orphans the previous block forever (a Valgrind "definitely lost" leak on every loop iteration).',
+              'The old Heap block becomes unreachable forever (a Valgrind "definitely lost" memory leak on every read iteration).',
           },
-          cLine: 19,
-          asmSection: 'gnl_text',
-          asmLine: null,
           ring: 3,
-          activeInstruction: 'stash = ft_strjoin_free(stash, buffer)',
+          activeInstruction: `Append buffer -> new Heap stash ${newStashBlock.address}; update .bss ptr`,
           highlightHeapId: newStashBlock.id,
           changedBssKey: stashKey,
         })
@@ -1270,7 +1109,7 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
 
     if (truncated) break;
 
-    // Handle read() == -1 error cleanup
+    // Error cleanup path
     if (readError) {
       freeHeap(bufBlock.id);
       const st = stashMap.get(stashKey);
@@ -1278,36 +1117,27 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       stashMap.set(stashKey, { blockId: null, text: null });
 
       stackActive = false;
-      stackFrameLabel = 'main()';
+      stackFrameLabel = 'Caller (idle)';
       regState.rax = { hex: toHex64(0n), meaning: 'NULL (read error)', role: 'return' };
-      returnedLines.push({
-        callIndex,
-        fd,
-        address: null,
-        value: null,
-        byteLength: 0,
-        syscallsInCall: syscallsInThisCall,
-      });
+      returnedLines.push({ callIndex, fd, address: null, value: null, byteLength: 0, syscallsInCall: syscallsInThisCall });
 
       emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 8,
         isMacro: true,
         phase: 'return',
-        title: `Error cleanup: free(buffer), free(stash), stash = NULL -> return NULL`,
-        explanation: `On read() == -1, get_next_line frees BOTH the temporary buffer AND any accumulated stash in .bss (setting it to NULL so future calls don't dereference a dangling pointer), then returns NULL with 0 leaks.`,
+        title: `Stage 8 — Error cleanup: free temp buffer & stash, reset .bss to NULL -> return NULL`,
+        explanation: `Because \`read()\` failed (\`-1\`), both the temporary \`buffer\` and any accumulated Heap stash are freed, the \`.bss\` static pointer is reset to \`NULL\` (no dangling pointer), the Stack frame closes, and \`NULL\` is returned with 0 leaks.`,
         evalTip: {
-          conceptTag: 'Error Leak Prevention',
-          question: 'Why also free and NULL-out `stash` when read() returns -1?',
+          conceptTag: 'Error Cleanup Contract',
+          question: 'Why must `.bss` `stash` be BOTH freed AND reset to `NULL` on read error?',
           answer:
-            'If a previous chunk succeeded and a later read() fails, leaving `stash` unfreed leaks memory, and freeing it without setting `stash = NULL` creates a use-after-free / double-free bug!',
+            'Freeing prevents a memory leak; resetting the static pointer to `NULL` prevents a future call from reading freed memory (use-after-free / double-free).',
         },
-        cLine: 17,
-        asmSection: 'gnl_text',
-        asmLine: null,
         isReturnMarker: true,
         ring: 3,
-        activeInstruction: 'free(buffer); free(stash); return NULL',
+        activeInstruction: 'Free buffer & stash; .bss = NULL; return NULL',
         changedRegs: ['rax'],
         changedBssKey: stashKey,
         errnoValue: 'EBADF (9)',
@@ -1316,70 +1146,59 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       continue;
     }
 
-    // 7. free(buffer) after loop finishes
+    // Stage 8a: Free temporary read buffer
     freeHeap(bufBlock.id);
     if (
       !emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 8,
         isMacro: true,
         phase: 'user_heap',
-        title: `Loop done: free(buffer) releases ${bufBlock.size} B at ${bufBlock.address}`,
-        explanation: `Either a '\\n' is now inside ${mode === 'bonus' ? `stash[${fd}]` : 'stash'} or EOF (bytes_read == 0) was reached. The temporary read buffer is no longer needed and is immediately freed back to the Heap allocator.`,
+        title: `Stage 8 — Release temporary read buffer (${bufBlock.size} B at ${bufBlock.address})`,
+        explanation: `A complete line (or EOF) is now sitting in our accumulated Heap stash. The temporary \`buffer\` container is no longer needed and is freed back to the Heap allocator immediately.`,
         evalTip: {
-          conceptTag: 'Temporary Buffer Lifecycle',
-          question: 'Why allocate and free `buffer` per call instead of keeping it static?',
+          conceptTag: 'Temp Buffer Lifetime',
+          question: 'Why free the temporary `buffer` as soon as reading finishes?',
           answer:
-            'Keeping a huge `BUFFER_SIZE` buffer permanently allocated would hold RAM until process exit. Freeing `buffer` once the line is ready keeps resident Heap usage minimal.',
+            'Holding onto a large `BUFFER_SIZE` allocation after the line is ready wastes RAM until the process exits.',
         },
-        cLine: 21,
-        asmSection: 'gnl_text',
-        asmLine: null,
         ring: 3,
-        activeInstruction: `free(${bufBlock.address})`,
+        activeInstruction: `Free temporary Heap buffer (${bufBlock.address})`,
         highlightHeapId: bufBlock.id,
       })
     ) {
       break;
     }
 
-    // 8. Check if stash is empty / NULL (EOF with nothing left to return)
+    // Empty stash at EOF -> return NULL
     const currentStash = stashMap.get(stashKey) ?? { blockId: null, text: null };
     if (!currentStash.text || currentStash.text.length === 0) {
       if (currentStash.blockId) freeHeap(currentStash.blockId);
       stashMap.set(stashKey, { blockId: null, text: null });
 
       stackActive = false;
-      stackFrameLabel = 'main()';
+      stackFrameLabel = 'Caller (idle)';
       regState.rax = { hex: toHex64(0n), meaning: 'NULL (EOF)', role: 'return' };
-      returnedLines.push({
-        callIndex,
-        fd,
-        address: null,
-        value: null,
-        byteLength: 0,
-        syscallsInCall: syscallsInThisCall,
-      });
+      returnedLines.push({ callIndex, fd, address: null, value: null, byteLength: 0, syscallsInCall: syscallsInThisCall });
 
       emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 8,
         isMacro: true,
         phase: 'return',
-        title: `Call #${callIndex} returns NULL — EOF reached, 0 GNL leaks`,
-        explanation: `Nothing remains in .bss ${mode === 'bonus' ? `stash[${fd}]` : 'stash'} and read() returned 0 (EOF). The Stack frame is popped and get_next_line(fd=${fd}) returns NULL to signal end of stream.`,
+        title: `Stage 8 — Call #${callIndex} returns NULL (EOF reached, 0 leaks)`,
+        explanation: `No bytes remain in the \`.bss\` stash and \`read()\` hit EOF (\`0\`). The Stack frame closes and \`NULL\` is returned to indicate all lines have been delivered.`,
         evalTip: {
-          conceptTag: 'Clean EOF Termination',
-          question: 'How do we guarantee 0 leaks when EOF is reached?',
+          conceptTag: 'Clean EOF State',
+          question: 'What is the state of Heap memory when EOF returns `NULL`?',
           answer:
-            'Every internal block (`buffer` and `stash`) has been freed and `.bss` `stash` is `NULL`. Only the returned lines handed to `main()` remain (for the caller to `free()`).',
+            'Zero internal Heap bytes remain live: both `buffer` and `stash` are freed, and `.bss` holds `NULL`.',
         },
-        cLine: 23,
-        asmSection: 'gnl_text',
-        asmLine: null,
         isReturnMarker: true,
         ring: 3,
-        activeInstruction: 'xor eax, eax; ret  ; return NULL',
+        activeInstruction: 'Stack popped -> return NULL (0 GNL leaks)',
         changedRegs: ['rax'],
         changedBssKey: stashKey,
       });
@@ -1388,16 +1207,14 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       continue;
     }
 
-    // 9. Extract line up to and including first '\n' (or all remaining bytes on EOF)
+    // Stage 8b: Slice out the ready line into a new Heap block
     const nlIndex = currentStash.text.indexOf('\n');
-    const lineText =
-      nlIndex !== -1 ? currentStash.text.slice(0, nlIndex + 1) : currentStash.text;
-    const leftoverText =
-      nlIndex !== -1 ? currentStash.text.slice(nlIndex + 1) : '';
+    const lineText = nlIndex !== -1 ? currentStash.text.slice(0, nlIndex + 1) : currentStash.text;
+    const leftoverText = nlIndex !== -1 ? currentStash.text.slice(nlIndex + 1) : '';
 
     const lineBlock = allocHeap(
       lineText.length + 1,
-      `line #${callIndex} (fd=${fd})`,
+      `returned line #${callIndex} (fd=${fd})`,
       'returned_line',
       fd,
       lineText,
@@ -1409,24 +1226,22 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       !emit({
         callIndex,
         activeFd: fd,
+        stageIndex: 8,
         isMacro: true,
         phase: 'user_heap',
-        title: `Extract line: malloc(${lineText.length + 1}) -> ${formatPreviewString(lineText)} at ${lineBlock.address}`,
+        title: `Stage 8 — Slice ready line into new Heap string: ${formatPreviewString(lineText)} at ${lineBlock.address}`,
         explanation:
           nlIndex !== -1
-            ? `Found '\\n' at stash index ${nlIndex}. Allocates a dedicated ${lineText.length + 1}-byte Heap string containing bytes [0..${nlIndex}] (including '\\n') plus '\\0'.`
-            : `No '\\n' found before EOF. Allocates a dedicated ${lineText.length + 1}-byte Heap string containing all ${lineText.length} remaining byte(s) plus '\\0'.`,
+            ? `Allocates a dedicated ${lineText.length + 1}-byte Heap string containing every byte up to and including the first \`'\\n'\` (index ${nlIndex}), terminated by \`'\\0'\`.`
+            : `File ended without \`'\\n'\`. Allocates a dedicated ${lineText.length + 1}-byte Heap string holding all ${lineText.length} final byte(s) terminated by \`'\\0'\`.`,
         evalTip: {
-          conceptTag: 'Line Extraction Contract',
-          question: 'Should the returned string include the trailing `\\n`?',
+          conceptTag: 'Return Contract',
+          question: 'Should the returned string include `\\n`?',
           answer:
-            'Yes — 42 subject rule: the returned line MUST include the terminating `\\n` character, EXCEPT when the end of the file is reached and the file does not end with `\\n`.',
+            'Yes — always include the terminating `\\n`, except on the final line if the file itself does not end with `\\n`.',
         },
-        cLine: 24,
-        asmSection: 'gnl_text',
-        asmLine: null,
         ring: 3,
-        activeInstruction: `line = ft_extract_line(stash) -> ${lineBlock.address}`,
+        activeInstruction: `Allocate Heap line (${lineText.length + 1} B) -> ${lineBlock.address}`,
         changedStack: ['line'],
         highlightHeapId: lineBlock.id,
       })
@@ -1434,7 +1249,7 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       break;
     }
 
-    // 10. Trim stash: keep leftovers after '\n' in Heap & update .bss pointer (or free & NULL)
+    // Stage 8c: Preserve leftovers after '\n' in Heap & point .bss static pointer at them
     const oldCombinedId = currentStash.blockId;
     if (leftoverText.length > 0) {
       const leftoverBlock = allocHeap(
@@ -1452,21 +1267,19 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 8,
           isMacro: true,
           phase: 'user_heap',
-          title: `Trim stash: save leftover ${formatPreviewString(leftoverText)} in .bss -> ${leftoverBlock.address}`,
-          explanation: `Allocates a ${leftoverText.length + 1}-byte Heap block for the leftover bytes after '\\n', frees the old combined stash block, and updates .bss ${mode === 'bonus' ? `stash[${fd}]` : 'stash'} to point to ${leftoverBlock.address} for the next call.`,
+          title: `Stage 8 — Keep leftovers ${formatPreviewString(leftoverText)} in Heap & save address in .bss`,
+          explanation: `Bytes after \`'\\n'\` cannot be pushed back into the Kernel. They are stored in a trimmed ${leftoverText.length + 1}-byte Heap block (\`${leftoverBlock.address}\`), the old combined stash is freed, and the \`.bss\` \`static\` pointer stores this address for the next call.`,
           evalTip: {
-            conceptTag: 'Preserving Leftovers',
-            question: 'What happens to the bytes read past `\\n`?',
+            conceptTag: 'Why Leftovers Must Stay in .bss -> Heap',
+            question: 'Why not just rewind the file offset back to `\\n` instead of storing leftovers?',
             answer:
-              'They cannot be put back into the kernel (we cannot `lseek()`). Instead, they are trimmed into a fresh Heap block whose address is stored in the `.bss` static pointer for the next `get_next_line()` call.',
+              '`lseek()` is forbidden AND fails (`ESPIPE`) on `stdin`, pipes, and sockets. Keeping leftovers in Heap via a `.bss` static pointer works on every file descriptor.',
           },
-          cLine: 25,
-          asmSection: 'gnl_text',
-          asmLine: null,
           ring: 3,
-          activeInstruction: `stash = ft_trim_stash(stash) -> ${leftoverBlock.address}`,
+          activeInstruction: `Trim leftovers -> ${leftoverBlock.address}; update .bss ptr`,
           highlightHeapId: leftoverBlock.id,
           changedBssKey: stashKey,
         })
@@ -1481,21 +1294,19 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
         !emit({
           callIndex,
           activeFd: fd,
+          stageIndex: 8,
           isMacro: true,
           phase: 'user_heap',
-          title: `Trim stash: no leftover bytes -> free(stash) & set .bss pointer = NULL`,
-          explanation: `Nothing remained after the extracted line. The old stash block is freed and the .bss pointer is reset to NULL so zero internal Heap bytes remain live.`,
+          title: `Stage 8 — Zero leftover bytes: free old stash & reset .bss pointer to NULL`,
+          explanation: `Nothing remained after the extracted line. The old combined stash block is freed and the \`.bss\` static pointer is reset to \`NULL\`.`,
           evalTip: {
-            conceptTag: 'Zero Leftover Cleanup',
-            question: 'Why set `stash = NULL` instead of leaving an empty "" allocation?',
+            conceptTag: 'Clean Stash Reset',
+            question: 'Why reset `.bss` to `NULL` instead of keeping an empty 1-byte string?',
             answer:
-              'Freeing and setting `stash = NULL` immediately guarantees 0 bytes still reachable if the caller finishes right after the final line (and prevents dangling pointers).',
+              'Freeing and setting to `NULL` immediately leaves 0 internal Heap bytes live once the last line is returned.',
           },
-          cLine: 25,
-          asmSection: 'gnl_text',
-          asmLine: null,
           ring: 3,
-          activeInstruction: 'free(stash); stash = NULL',
+          activeInstruction: 'Free old stash; .bss static ptr = NULL',
           changedBssKey: stashKey,
         })
       ) {
@@ -1503,16 +1314,12 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
       }
     }
 
-    // 11. return (line)
+    // Stage 8d: Return Heap address to caller & pop Stack frame
     lineBlock.status = 'returned_to_caller';
     stackActive = false;
-    stackFrameLabel = 'main()';
-    regState.rax = {
-      hex: toHex64(lineBlock.rawAddr),
-      meaning: `return ${lineBlock.address} (${formatPreviewString(lineText, 14)})`,
-      role: 'return',
-    };
-    regState.rip = { hex: '0x0000000000401200', meaning: 'returned to main()', role: 'control' };
+    stackFrameLabel = 'Caller (idle)';
+    regState.rax = { hex: toHex64(lineBlock.rawAddr), meaning: `Return ${lineBlock.address}`, role: 'return' };
+    regState.rip = { hex: '0x0000000000401200', meaning: 'Returned to caller', role: 'control' };
 
     returnedLines.push({
       callIndex,
@@ -1526,22 +1333,20 @@ export function compileTrace(config: SimulationConfig): CompiledTrace {
     emit({
       callIndex,
       activeFd: fd,
+      stageIndex: 8,
       isMacro: true,
       phase: 'return',
-      title: `Call #${callIndex} returns ${formatPreviewString(lineText)} (${lineBlock.address})`,
-      explanation: `get_next_line(fd=${fd}) returns ${lineBlock.address} in rax and pops its Stack frame (local variables vanish). Ownership of the returned Heap line transfers to main(), while .bss ${mode === 'bonus' ? `stash[${fd}]` : 'stash'} persists ${stashMap.get(stashKey)?.text ? `pointing to ${formatPreviewString(stashMap.get(stashKey)?.text ?? null)}` : 'as NULL'}.`,
+      title: `Call #${callIndex} returns ${formatPreviewString(lineText)} (${lineBlock.address}) — Stack frame destroyed`,
+      explanation: `Returns the Heap address \`${lineBlock.address}\` via \`rax\` and pops the Stack frame (all local variables disappear). Ownership of the returned line transfers to the caller, while \`.bss\` preserves ${stashMap.get(stashKey)?.text ? `the pointer to leftovers ${formatPreviewString(stashMap.get(stashKey)?.text ?? null)}` : '`NULL`'} for the next call.`,
       evalTip: {
-        conceptTag: 'Ownership & Return Contract',
-        question: 'Who is responsible for calling free() on the returned string?',
+        conceptTag: 'Caller Ownership',
+        question: 'Who frees the returned string?',
         answer:
-          'The caller (`main()`). `get_next_line` transfers Heap ownership of `line` to the caller via `rax`, while keeping internal cleanup of `buffer` and old `stash` completely leak-free.',
+          'The caller (`main`). `get_next_line` transfers ownership of the returned Heap string while guaranteeing all internal allocations (`buffer` and old `stash`) are freed.',
       },
-      cLine: 26,
-      asmSection: 'gnl_text',
-      asmLine: null,
       isReturnMarker: true,
       ring: 3,
-      activeInstruction: `mov rax, ${lineBlock.address}; ret`,
+      activeInstruction: `Return ${lineBlock.address} in rax; Stack frame destroyed`,
       changedRegs: ['rax', 'rip'],
       highlightHeapId: lineBlock.id,
     });

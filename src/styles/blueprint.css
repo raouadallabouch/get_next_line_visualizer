@@ -473,15 +473,131 @@ body,
 }
 
 /* =========================================================
-   Main 3-Column Technical Schematic Grid
+   8-Stage Physical Mental-Model Pipeline
    ========================================================= */
-.schematic-grid {
+.pipeline-bar {
+  padding: 7px 14px;
+  background: var(--bg-canvas);
+  border-bottom: 1px solid var(--border-hairline);
+  overflow-x: auto;
+}
+
+.pipeline-track {
+  display: flex;
+  align-items: stretch;
+  gap: 5px;
+  min-width: 960px;
+}
+
+.pipeline-node {
+  flex: 1 1 0;
+  padding: 5px 7px;
+  background: var(--bg-panel);
+  border: 1px solid var(--border-hairline);
+  border-radius: var(--radius-xs);
+  transition: all var(--ease-snappy);
+}
+
+.pipeline-node.done {
+  background: var(--bg-well-alt);
+  color: var(--ink-muted);
+}
+
+.pipeline-node.active.ring3 {
+  background: var(--ring3-bg);
+  border-color: var(--ring3-ink);
+  box-shadow: inset 0 2px 0 var(--ring3-ink);
+}
+
+.pipeline-node.active.ring0 {
+  background: var(--ring0-bg);
+  border-color: var(--ring0-ink);
+  box-shadow: inset 0 2px 0 var(--ring0-ink);
+}
+
+.pipeline-node.active.err {
+  background: var(--err-bg);
+  border-color: var(--err-ink);
+  box-shadow: inset 0 2px 0 var(--err-ink);
+}
+
+.pipeline-node-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--ink-muted);
+  margin-bottom: 2px;
+}
+
+.pipeline-num {
+  font-weight: 600;
+}
+
+.pipeline-ring-tag {
+  padding: 0 3px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-well);
+  border-radius: 2px;
+}
+
+.pipeline-node.active.ring3 .pipeline-ring-tag {
+  color: var(--ring3-ink);
+  border-color: var(--ring3-border);
+  background: #ffffff;
+}
+
+.pipeline-node.active.ring0 .pipeline-ring-tag {
+  color: var(--ring0-ink);
+  border-color: var(--ring0-border);
+  background: #ffffff;
+}
+
+.pipeline-label {
+  font-family: var(--font-sans);
+  font-size: 11.2px;
+  font-weight: 600;
+  color: var(--ink-primary);
+  white-space: nowrap;
+}
+
+.pipeline-node.done .pipeline-label {
+  color: var(--ink-secondary);
+}
+
+.pipeline-sub {
+  font-family: var(--font-mono);
+  font-size: 9.8px;
+  color: var(--ink-muted);
+  white-space: nowrap;
+}
+
+.pipeline-arrow {
+  display: flex;
+  align-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--ink-muted);
+  user-select: none;
+}
+
+/* =========================================================
+   Main 2-Column Spatial Machine Schematic (User Space | CPU & Kernel)
+   ========================================================= */
+.schematic-grid-2col {
   flex: 1;
   display: grid;
-  grid-template-columns: minmax(290px, 0.92fr) minmax(350px, 1.12fr) minmax(360px, 1.16fr);
+  grid-template-columns: minmax(420px, 1.05fr) minmax(420px, 1fr);
   gap: 1px;
   background: var(--border-hairline);
   min-height: 0;
+}
+
+.mem-split-row {
+  display: grid;
+  grid-template-columns: 1.15fr 1fr;
+  gap: 10px;
 }
 
 .schematic-col {
@@ -1454,8 +1570,8 @@ body,
 /* =========================================================
    Responsive Layout
    ========================================================= */
-@media (max-width: 1180px) {
-  .schematic-grid {
+@media (max-width: 1060px) {
+  .schematic-grid-2col {
     grid-template-columns: 1fr;
   }
   .narrative-strip {
@@ -1469,7 +1585,8 @@ body,
 
 @media (max-width: 680px) {
   .kernel-subgrid,
-  .text-contrast-box {
+  .text-contrast-box,
+  .mem-split-row {
     grid-template-columns: 1fr;
   }
 }
